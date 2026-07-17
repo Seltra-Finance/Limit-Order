@@ -64,8 +64,8 @@ contract PharaohAdapterForkTest is Test {
         vm.stopPrank();
     }
 
-    function _extra(int24 tickSpacing) internal pure returns (bytes memory) {
-        return abi.encode(tickSpacing);
+    function _extra(int24 tickSpacing) internal view returns (bytes memory) {
+        return abi.encode(block.timestamp + 60, tickSpacing);
     }
 
     function _quote(address tokenIn, address tokenOut, uint256 amountIn) internal returns (uint256) {

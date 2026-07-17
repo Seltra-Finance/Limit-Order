@@ -27,7 +27,7 @@ contract CancellationAndPauseTest is SeltraTestBase {
         // Maker kills the specific nonce directly on Permit2 (SDK helper maps
         // nonce -> word/mask).
         vm.prank(maker);
-        permit2.invalidateUnorderedNonces(nonce >> 8, 1 << (nonce & 0xff));
+        permit2.invalidateUnorderedNonces(nonce >> 8, uint256(1) << (nonce & 0xff));
 
         vm.expectRevert(abi.encodeWithSignature("InvalidNonce()"));
         vm.prank(keeper);

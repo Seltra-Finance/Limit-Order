@@ -117,8 +117,10 @@ contract BlackholeAdapterForkTest is Test {
     }
 
     function test_fork_blackholeSwapThroughAllowlistedPool() public {
-        vm.prank(owner);
-        adapter.setPoolAllowed(pool, true);
+        vm.startPrank(owner);
+        adapter.setRouteAllowed(pool, WAVAX, USDC, false, true, true);
+        adapter.setRouteAllowed(pool, USDC, WAVAX, false, true, true);
+        vm.stopPrank();
 
         bytes memory extra = _route(WAVAX, USDC);
 
@@ -148,7 +150,7 @@ contract BlackholeAdapterForkTest is Test {
 
     function test_fork_quoteSizesAndPriceImpact() public {
         vm.prank(owner);
-        adapter.setPoolAllowed(pool, true);
+        adapter.setRouteAllowed(pool, WAVAX, USDC, false, true, true);
         bytes memory extra = _route(WAVAX, USDC);
         uint256 q1 = router.quote(BLACKHOLE_ADAPTER_ID, WAVAX, USDC, 1e18, extra);
         uint256 q10 = router.quote(BLACKHOLE_ADAPTER_ID, WAVAX, USDC, 10e18, extra);
@@ -169,7 +171,7 @@ contract BlackholeAdapterForkTest is Test {
 
     function test_fork_fullDEXFillAgainstRealLiquidity() public {
         vm.prank(owner);
-        adapter.setPoolAllowed(pool, true);
+        adapter.setRouteAllowed(pool, WAVAX, USDC, false, true, true);
         uint256 amountIn = 10e18;
         bytes memory extra = _route(WAVAX, USDC);
         uint256 quotedOut = router.quote(BLACKHOLE_ADAPTER_ID, WAVAX, USDC, amountIn, extra);
@@ -219,7 +221,8 @@ contract BlackholeAdapterForkTest is Test {
         deal(WAVAX, settlementStub, 1e18);
         vm.startPrank(settlementStub);
         IERC20(WAVAX).approve(address(router), 1e18);
-        vm.expectRevert(abi.encodeWithSelector(BlackholeAdapter.PoolNotAllowed.selector, pool));
+        bytes32 key = adapter.routeKey(pool, WAVAX, USDC, false, false);
+        vm.expectRevert(abi.encodeWithSelector(BlackholeAdapter.RouteNotAllowed.selector, key));
         router.swap(2, WAVAX, USDC, 1e18, 0, extra);
         vm.stopPrank();
     }

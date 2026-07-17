@@ -11,15 +11,17 @@ import {IPharaohQuoterV2} from "../interfaces/external/IPharaohQuoterV2.sol";
 /// @title PharaohAdapter
 /// @notice Single-hop concentrated-liquidity adapter for Pharaoh Exchange.
 ///         The external contracts are immutable and the only keeper-supplied
-///         route field is the pool tick spacing. Token endpoints, amounts,
-///         recipient and slippage bound all come from Seltra.
+///         route fields are a short execution deadline and the pool tick
+///         spacing. Token endpoints, amounts, recipient and slippage bound all
+///         come from Seltra.
 ///
-///         `extra` is `abi.encode(int24 tickSpacing)`.
+///         `extra` is `abi.encode(uint256 deadline, int24 tickSpacing)`.
 contract PharaohAdapter is IDEXAdapter {
     using SafeERC20 for IERC20;
 
     error OnlyRouter();
     error BadTickSpacing();
+    error DeadlineExpired(uint256 deadline);
     error ZeroAddress();
 
     address public immutable ROUTER;
@@ -41,7 +43,7 @@ contract PharaohAdapter is IDEXAdapter {
         returns (uint256 amountOut)
     {
         if (msg.sender != ROUTER) revert OnlyRouter();
-        int24 tickSpacing = _decode(extra);
+        (uint256 deadline, int24 tickSpacing) = _decode(extra);
 
         IERC20(tokenIn).forceApprove(address(PHARAOH_ROUTER), amountIn);
         uint256 balanceBefore = IERC20(tokenOut).balanceOf(msg.sender);
@@ -51,7 +53,7 @@ contract PharaohAdapter is IDEXAdapter {
                 tokenOut: tokenOut,
                 tickSpacing: tickSpacing,
                 recipient: msg.sender,
-                deadline: block.timestamp,
+                deadline: deadline,
                 amountIn: amountIn,
                 amountOutMinimum: minOut,
                 sqrtPriceLimitX96: 0
@@ -68,7 +70,7 @@ contract PharaohAdapter is IDEXAdapter {
         external
         returns (uint256 amountOut)
     {
-        int24 tickSpacing = _decode(extra);
+        (, int24 tickSpacing) = _decode(extra);
         (amountOut,,,) = PHARAOH_QUOTER.quoteExactInputSingle(
             IPharaohQuoterV2.QuoteExactInputSingleParams({
                 tokenIn: tokenIn, tokenOut: tokenOut, amountIn: amountIn, tickSpacing: tickSpacing, sqrtPriceLimitX96: 0
@@ -76,9 +78,10 @@ contract PharaohAdapter is IDEXAdapter {
         );
     }
 
-    function _decode(bytes calldata extra) internal pure returns (int24 tickSpacing) {
-        if (extra.length != 32) revert BadTickSpacing();
-        tickSpacing = abi.decode(extra, (int24));
+    function _decode(bytes calldata extra) internal view returns (uint256 deadline, int24 tickSpacing) {
+        if (extra.length != 64) revert BadTickSpacing();
+        (deadline, tickSpacing) = abi.decode(extra, (uint256, int24));
+        if (deadline < block.timestamp) revert DeadlineExpired(deadline);
         if (tickSpacing <= 0) revert BadTickSpacing();
     }
 }

@@ -78,7 +78,7 @@ contract BlackholeAdapterTest is Test {
         vm.startPrank(owner);
         router.setSettlement(settlement);
         router.addAdapter(ADAPTER_ID, address(adapter));
-        adapter.setPoolAllowed(pool, true);
+        adapter.setRouteAllowed(pool, address(wavax), address(usdc), false, true, true);
         vm.stopPrank();
     }
 
@@ -108,19 +108,35 @@ contract BlackholeAdapterTest is Test {
         assertEq(wavax.allowance(address(adapter), address(bhRouter)), 0);
     }
 
-    function test_rejectsReceiverPoolAndMultiHop() public {
+    function test_rejectsReceiverRouteAndMultiHop() public {
         vm.expectRevert(abi.encodeWithSelector(BlackholeAdapter.InvalidReceiver.selector, settlement));
         adapter.quote(address(wavax), address(usdc), 1e18, _extra(settlement));
 
         vm.prank(owner);
-        adapter.setPoolAllowed(pool, false);
-        vm.expectRevert(abi.encodeWithSelector(BlackholeAdapter.PoolNotAllowed.selector, pool));
+        adapter.setRouteAllowed(pool, address(wavax), address(usdc), false, true, false);
+        bytes32 key = adapter.routeKey(pool, address(wavax), address(usdc), false, true);
+        vm.expectRevert(abi.encodeWithSelector(BlackholeAdapter.RouteNotAllowed.selector, key));
         adapter.quote(address(wavax), address(usdc), 1e18, _extra(address(router)));
 
         IBlackholeRouterV2.route[] memory routes = new IBlackholeRouterV2.route[](2);
         bytes memory extra = abi.encode(block.timestamp + 60, routes);
         vm.expectRevert(BlackholeAdapter.BadRoute.selector);
         adapter.quote(address(wavax), address(usdc), 1e18, extra);
+    }
+
+    function test_routeAllowlistBindsPoolSelectionFlags() public {
+        IBlackholeRouterV2.route[] memory routes = new IBlackholeRouterV2.route[](1);
+        routes[0] = IBlackholeRouterV2.route({
+            pair: pool,
+            from: address(wavax),
+            to: address(usdc),
+            stable: true,
+            concentrated: false,
+            receiver: address(router)
+        });
+        bytes32 key = adapter.routeKey(pool, address(wavax), address(usdc), true, false);
+        vm.expectRevert(abi.encodeWithSelector(BlackholeAdapter.RouteNotAllowed.selector, key));
+        adapter.quote(address(wavax), address(usdc), 1e18, abi.encode(block.timestamp + 60, routes));
     }
 
     function test_onlyRouterAndConstructorChecks() public {

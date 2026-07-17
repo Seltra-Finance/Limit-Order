@@ -29,12 +29,14 @@ contract MockPharaohQuoter is IPharaohQuoterV2 {
 
 contract MockPharaohSwapRouter is IPharaohSwapRouter {
     uint256 public amountOut;
+    uint256 public lastDeadline;
 
     function setAmountOut(uint256 amountOut_) external {
         amountOut = amountOut_;
     }
 
     function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256) {
+        lastDeadline = params.deadline;
         require(block.timestamp <= params.deadline, "expired");
         require(amountOut >= params.amountOutMinimum, "Too little received");
         IERC20(params.tokenIn).transferFrom(msg.sender, address(this), params.amountIn);
@@ -59,6 +61,10 @@ contract PharaohAdapterTest is Test {
     MockPharaohSwapRouter internal pharaohRouter;
     PharaohAdapter internal adapter;
 
+    function _extra() internal view returns (bytes memory) {
+        return abi.encode(block.timestamp + 60, TICK_SPACING);
+    }
+
     function setUp() public {
         wavax = new TestERC20("Wrapped AVAX", "WAVAX", 18);
         usdc = new TestERC20("USD Coin", "USDC", 6);
@@ -75,8 +81,7 @@ contract PharaohAdapterTest is Test {
 
     function test_quoteUsesConfiguredTickSpacing() public {
         quoter.setAmountOut(41e6);
-        uint256 amountOut =
-            router.quote(PHARAOH_ADAPTER_ID, address(wavax), address(usdc), 1e18, abi.encode(TICK_SPACING));
+        uint256 amountOut = router.quote(PHARAOH_ADAPTER_ID, address(wavax), address(usdc), 1e18, _extra());
         assertEq(amountOut, 41e6);
         assertEq(quoter.lastTickSpacing(), TICK_SPACING, "quote used route tick spacing");
     }
@@ -87,14 +92,17 @@ contract PharaohAdapterTest is Test {
 
         vm.startPrank(settlement);
         wavax.approve(address(router), 1e18);
-        uint256 amountOut =
-            router.swap(PHARAOH_ADAPTER_ID, address(wavax), address(usdc), 1e18, 40e6, abi.encode(TICK_SPACING));
+        uint256 deadline = block.timestamp + 60;
+        uint256 amountOut = router.swap(
+            PHARAOH_ADAPTER_ID, address(wavax), address(usdc), 1e18, 40e6, abi.encode(deadline, TICK_SPACING)
+        );
         vm.stopPrank();
 
         assertEq(amountOut, 41e6);
         assertEq(usdc.balanceOf(settlement), 41e6);
         assertEq(wavax.balanceOf(address(adapter)), 0);
         assertEq(wavax.allowance(address(adapter), address(pharaohRouter)), 0, "approval cleared");
+        assertEq(pharaohRouter.lastDeadline(), deadline, "keeper deadline forwarded unchanged");
     }
 
     function test_swapHonorsSlippageBound() public {
@@ -104,14 +112,14 @@ contract PharaohAdapterTest is Test {
         vm.startPrank(settlement);
         wavax.approve(address(router), 1e18);
         vm.expectRevert(bytes("Too little received"));
-        router.swap(PHARAOH_ADAPTER_ID, address(wavax), address(usdc), 1e18, 40e6, abi.encode(TICK_SPACING));
+        router.swap(PHARAOH_ADAPTER_ID, address(wavax), address(usdc), 1e18, 40e6, _extra());
         vm.stopPrank();
     }
 
     function test_swapOnlyAggregationRouter() public {
         vm.expectRevert(PharaohAdapter.OnlyRouter.selector);
         vm.prank(keeper);
-        adapter.swap(address(wavax), address(usdc), 1e18, 0, abi.encode(TICK_SPACING));
+        adapter.swap(address(wavax), address(usdc), 1e18, 0, _extra());
     }
 
     function test_revertsMalformedOrNonPositiveTickSpacing() public {
@@ -119,7 +127,14 @@ contract PharaohAdapterTest is Test {
         adapter.quote(address(wavax), address(usdc), 1e18, "");
 
         vm.expectRevert(PharaohAdapter.BadTickSpacing.selector);
-        adapter.quote(address(wavax), address(usdc), 1e18, abi.encode(int24(0)));
+        adapter.quote(address(wavax), address(usdc), 1e18, abi.encode(block.timestamp + 60, int24(0)));
+    }
+
+    function test_revertsExpiredKeeperDeadline() public {
+        vm.warp(100);
+        uint256 deadline = block.timestamp - 1;
+        vm.expectRevert(abi.encodeWithSelector(PharaohAdapter.DeadlineExpired.selector, deadline));
+        adapter.quote(address(wavax), address(usdc), 1e18, abi.encode(deadline, TICK_SPACING));
     }
 
     function test_constructorRejectsZeroAddresses() public {

@@ -6,7 +6,7 @@ import type { StoredOrder } from "./types.js";
  * no floats):
  *   - opposite-asset mirror: a.makerAsset == b.takerAsset && a.takerAsset == b.makerAsset
  *   - exact size (X leg):    a.makingAmount == b.takingAmount
- *   - cross condition:       b.makingAmount * a.makingAmount >= a.takingAmount * b.takingAmount
+ *   - cross condition:       b.makingAmount >= a.takingAmount
  * Convention: `a` sells base X for quote Y; `b` sells quote Y for base X
  * (fillOrderP2P must be called with the orders in this position).
  */
@@ -18,9 +18,9 @@ export interface Match {
   surplus: bigint;
 }
 
-/** Mirrors SeltraSettlement's division-free integer cross-multiplication. */
+/** Mirrors the overflow-safe reduction used by SeltraSettlement. */
 export function crosses(a: StoredOrder["order"], b: StoredOrder["order"]): boolean {
-  return b.makingAmount * a.makingAmount >= a.takingAmount * b.takingAmount;
+  return b.makingAmount >= a.takingAmount;
 }
 
 export function isMirrorPair(a: StoredOrder["order"], b: StoredOrder["order"]): boolean {

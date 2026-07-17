@@ -18,7 +18,7 @@ contracts/            Foundry project (Solidity 0.8.24)
     libraries/OrderLib.sol       Order struct, witness typehash + type string
     adapters/
       LFJLBAdapter.sol           V1 production adapter (LFJ Liquidity Book)
-      BlackholeAdapter.sol       Blackhole RouterV2 + RouterHelper, pool-gated
+      BlackholeAdapter.sol       quarantined Blackhole pre-work, full-route gated
       PharaohAdapter.sol         Pharaoh concentrated-liquidity adapter
       MockDEXAdapter.sol         Fuji/testing adapter with settable price
   test/                unit, fuzz, invariant suites; fork tests in test/fork
@@ -27,7 +27,7 @@ services/             TypeScript off-chain stack (Node 20+, ESM)
   src/
     permit2.ts         witness signing/hashing SDK (cross-checked vs Foundry)
     api.ts             orderbook REST + WebSocket (Fastify)
-    matching.ts        continuous exact-size P2P matcher (bigint cross math)
+    matching.ts        continuous exact-size P2P matcher (overflow-safe comparison)
     watcher.ts         pool-state price watcher (per-order fillability)
     keeper.ts          simulate-then-submit keeper bot
     indexer.ts         event reconciler (fills, epochs, Permit2 cancels)
@@ -61,7 +61,7 @@ Contracts (Foundry):
 ```sh
 cd contracts
 forge build
-forge test                    # 77 pass; fork suites explicitly skip by default
+forge test                    # fork suites explicitly skip by default
 FOUNDRY_PROFILE=ci forge test --mc InvariantsTest   # 10k+ run invariants
 
 # all live venue forks (LFJ, Blackhole, Pharaoh) + canonical Permit2:
@@ -90,7 +90,9 @@ deploying from vendored bytecode only if the chain lacks it, wires
 router/settlement/adapters, applies the token allowlist, optionally hands
 ownership to `OWNER` (multisig/timelock), and writes a deployment manifest.
 `DEPLOY_MOCK_ADAPTER=false` for mainnet (the mock must never be registered
-there). Adapter ids are `0` mock, `1` LFJ, `2` Blackhole, `3` Pharaoh.
+there). Adapter ids are `0` mock, `1` LFJ, and `3` Pharaoh. ID `2` remains
+reserved for Blackhole but is deliberately not registered by the production
+deploy script until executable pool binding receives independent validation.
 
 Then run the off-chain stack:
 
@@ -98,7 +100,7 @@ Then run the off-chain stack:
 cd services
 SETTLEMENT=0x... ROUTER=0x... RPC_URL=$FUJI_RPC_URL CHAIN_ID=43113 \
 KEEPER_PRIVATE_KEY=0x... \
-PAIRS='{"WAVAX/USDC":{"base":"0xCcf5...","quote":"0xBE1E..."}}' \
+PAIRS='{"WAVAX/USDC":{"base":"0x760D...","quote":"0x00B7..."}}' \
 npm run dev
 ```
 
@@ -107,9 +109,11 @@ run on the in-memory store for dev.
 
 ## Key invariants (enforced on-chain, verified in tests)
 
-1. **Maker never shorted:** `amountOut >= order.takingAmount` measured by
-   balance delta at the settlement, or the fill reverts. Surplus splits only
-   ever apply above the signed minimum (rounding dust goes to the keeper side).
+1. **Maker never shorted:** `amountOut >= order.takingAmount` is measured by
+   balance delta at the settlement, and every payout must increase the
+   receiver's balance by the exact nominal amount. Fee-on-transfer or anomalous
+   rebasing behavior reverts atomically. Surplus splits only apply above the
+   signed minimum (rounding dust goes to the keeper side).
 2. **No double spend:** a Permit2 nonce consumed on either fill path can never
    be spent again (tested across paths, fuzzed, and invariant-tested).
 3. **Token conservation on P2P:** X in == X out, Y in == Y out across maker
@@ -161,16 +165,17 @@ can still match P2P for zero slippage.
 
 - `unpauseFills` is `onlyOwner`; production sets owner = 48h timelock behind a
   multisig (spec: "owner or timelock"). Same for `addAdapter` ("onlyTimelock").
-- The LFJ adapter takes its explicit short deadline from the keeper inside
-  `extra` (validated path endpoints, passed through the settlement call), since
-  the locked router `swap` signature carries no deadline parameter.
+- LFJ V1 accepts direct routes only. It takes an explicit short deadline from
+  the keeper inside `extra` and pins both path endpoints to the order.
+- Pharaoh `extra` is `abi.encode(uint256 deadline, int24 tickSpacing)`; the
+  adapter rejects expired deadlines and forwards the keeper value unchanged.
 - The mainnet LBQuoter v2.1 in the fork tests was verified live on-chain at
   `0x64b57F4249aA99a812212cee7DAEFEDC40B203cD`; the LBRouter v2.1 address is
   the documented `0xb4315e873dBcf96Ffd0acd8EA43f689D8c20fB30`.
-- Blackhole defaults use the current official RouterV2
-  `0xe946A9f39312E2346BA79DAb865B0e9A74f2F981` and RouterHelper
-  `0x53D569BC4B37ADbBDB6ab447D92ADf42514AE480`; pools remain explicitly
-  allowlisted. Pharaoh quotes use its deployed non-view QuoterV2 through
+- Blackhole route authorization binds the pair, endpoints, stable flag, and
+  concentrated flag into one allowlist key. The adapter remains unregistered
+  in V1 while its upstream pool-resolution behavior receives independent
+  validation. Pharaoh quotes use its deployed non-view QuoterV2 through
   client-side `eth_call`/`staticCall`.
 - Goldsky subgraph manifests are not included; `services/src/indexer.ts` is the
   local reconciler over the same events and is the source of truth for the
