@@ -119,6 +119,23 @@ contract LFJLBAdapterTest is Test {
         adapter.swap(address(wavax), address(usdc), 1e18, 0, _extra(address(usdc)));
     }
 
+    function test_rejectsMultiHopPath() public {
+        TestERC20 intermediate = new TestERC20("Intermediate", "MID", 18);
+        uint256[] memory binSteps = new uint256[](2);
+        binSteps[0] = 20;
+        binSteps[1] = 20;
+        ILBRouter.Version[] memory versions = new ILBRouter.Version[](2);
+        versions[0] = ILBRouter.Version.V2_1;
+        versions[1] = ILBRouter.Version.V2_1;
+        IERC20[] memory tokens = new IERC20[](3);
+        tokens[0] = IERC20(address(wavax));
+        tokens[1] = IERC20(address(intermediate));
+        tokens[2] = IERC20(address(usdc));
+
+        vm.expectRevert(LFJLBAdapter.BadPath.selector);
+        adapter.quote(address(wavax), address(usdc), 1e18, abi.encode(block.timestamp + 60, binSteps, versions, tokens));
+    }
+
     function test_constructorRejectsZeroAddress() public {
         vm.expectRevert(LFJLBAdapter.ZeroAddress.selector);
         new LFJLBAdapter(address(0), lbRouter, quoter);

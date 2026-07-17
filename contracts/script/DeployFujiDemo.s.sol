@@ -31,6 +31,7 @@ contract DeployFujiDemo is Script {
         uint256 pk = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(pk);
         address guardian = vm.envOr("GUARDIAN", deployer);
+        address finalOwner = vm.envOr("OWNER", deployer);
         require(CANONICAL_PERMIT2.code.length > 0, "canonical Permit2 missing on this chain");
 
         vm.startBroadcast(pk);
@@ -66,6 +67,14 @@ contract DeployFujiDemo is Script {
         mock.setPrice(address(base), address(quote), 41e6);
         quote.mint(address(mock), 1_000_000e6);
 
+        // Production-shaped staging: begin the Ownable2Step handoff to the
+        // existing timelock while retaining deployer control until its delayed
+        // acceptOwnership calls execute.
+        if (finalOwner != deployer) {
+            settlement.transferOwnership(finalOwner);
+            router.transferOwnership(finalOwner);
+        }
+
         vm.stopBroadcast();
 
         string memory json = "seltra-fuji-demo";
@@ -77,6 +86,7 @@ contract DeployFujiDemo is Script {
         vm.serializeAddress(json, "baseToken", address(base));
         vm.serializeAddress(json, "quoteToken", address(quote));
         vm.serializeAddress(json, "deployer", deployer);
+        vm.serializeAddress(json, "owner", finalOwner);
         string memory out = vm.serializeAddress(json, "guardian", guardian);
         vm.writeJson(out, "./addresses.fuji.json");
 

@@ -8,9 +8,9 @@ Chain ID: `43113`
 
 | Contract | Address |
 |---|---|
-| SeltraSettlement | `0x9aa544248A29dda2d6272f881789877a7F289452` |
-| SeltraAggregationRouter | `0x9A22ec3AD6C9Bbf1902e61cBE06CA69a1c582F92` |
-| Mock DEX adapter (adapter ID 0) | `0xa5eBe0E8564396F2A92e3048efe4fD63067ec55a` |
+| SeltraSettlement | `0x962F86c218eEdEbFd2AAc6cb35b5283232769848` |
+| SeltraAggregationRouter | `0xba1f5399D6A09b73206EC9449e2ba1bA7db27257` |
+| Mock DEX adapter (adapter ID 0) | `0xdaF27f9116801dC3afDB896721c25166A408282E` |
 | Canonical Permit2 | `0x000000000022D473030F116dDEE9F6B43aC78BA3` |
 
 ## Governance
@@ -25,8 +25,8 @@ Chain ID: `43113`
 
 | Token | Decimals | Address |
 |---|---:|---|
-| sWAVAX | 18 | `0xCcf59B627b7e5b960A7261a019B936311eeEB04b` |
-| sUSDC | 6 | `0xBE1EE4976282713399FD460D0E1B30bFddfF0e88` |
+| sWAVAX | 18 | `0x760D9a5B4ae94f5e6c3ce014e3C116544515C830` |
+| sUSDC | 6 | `0x00B766567013BbCe12bF802f6E7C65F6da581Efe` |
 
 ## Safe Infrastructure
 
@@ -36,5 +36,8 @@ Chain ID: `43113`
 | Safe proxy factory | `0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67` |
 | Safe fallback handler | `0xfd0732Dc9E303f09fCEf3a7388Ad10A83459Ec99` |
 
-These addresses are for Fuji testnet only. The LFJ, Blackhole, and Pharaoh
-production adapters are not deployed in this testnet stack.
+These addresses are for Fuji testnet only and were deployed on 2026-07-17.
+All five authored contracts have exact Sourcify matches. The Timelock is the
+pending owner of Settlement and Router; its delayed acceptances become
+executable on 2026-07-19 at 12:38 CEST. LFJ, Blackhole, and Pharaoh are not
+registered in this testnet stack.

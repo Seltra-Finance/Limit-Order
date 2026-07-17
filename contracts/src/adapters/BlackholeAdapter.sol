@@ -15,9 +15,9 @@ import {IBlackholeRouterHelper} from "../interfaces/external/IBlackholeRouterHel
 ///         Integral CL; its RouterV2 route struct is
 ///         {pair, from, to, stable, concentrated, receiver}.
 ///
-///         V1.5 gating implemented here: per-pool allowlist (owner = timelock),
-///         every hop's receiver pinned to the Seltra router (a bad receiver
-///         can burn or divert funds), keeper-supplied explicit
+///         V1.5 gating implemented here: full-route allowlist (owner =
+///         timelock), every hop's receiver pinned to the Seltra router (a bad
+///         receiver can burn or divert funds), keeper-supplied explicit
 ///         deadline, and RouterV2/RouterHelper addresses are constructor params
 ///         verified live at deploy time, never hardcoded. The registry-
 ///         level guardian pause lives in SeltraAggregationRouter.
@@ -29,18 +29,19 @@ contract BlackholeAdapter is IDEXAdapter, Ownable2Step {
     error OnlyRouter();
     error BadRoute();
     error InvalidReceiver(address receiver);
-    error PoolNotAllowed(address pool);
+    error RouteNotAllowed(bytes32 routeKey);
     error ZeroAddress();
 
-    event PoolAllowed(address indexed pool, bool allowed);
+    event RouteAllowed(bytes32 indexed routeKey, bool allowed);
 
     address public immutable ROUTER; // Seltra aggregation router
     IBlackholeRouterV2 public immutable BH_ROUTER;
     IBlackholeRouterHelper public immutable BH_HELPER;
 
-    /// @notice Route/pool allowlist (spec 6.2): every hop's pair must be
-    ///         explicitly allowlisted before the adapter will touch it.
-    mapping(address => bool) public allowedPools;
+    /// @notice Every executable route field is bound into the allowlist key.
+    ///         This prevents an allowlisted `pair` from being reused with a
+    ///         different stable/concentrated pool selection.
+    mapping(bytes32 => bool) public allowedRoutes;
 
     constructor(address router_, IBlackholeRouterV2 bhRouter_, IBlackholeRouterHelper bhHelper_, address owner_)
         Ownable(owner_)
@@ -53,9 +54,21 @@ contract BlackholeAdapter is IDEXAdapter, Ownable2Step {
         BH_HELPER = bhHelper_;
     }
 
-    function setPoolAllowed(address pool, bool allowed) external onlyOwner {
-        allowedPools[pool] = allowed;
-        emit PoolAllowed(pool, allowed);
+    function setRouteAllowed(address pair, address from, address to, bool stable, bool concentrated, bool allowed)
+        external
+        onlyOwner
+    {
+        bytes32 key = routeKey(pair, from, to, stable, concentrated);
+        allowedRoutes[key] = allowed;
+        emit RouteAllowed(key, allowed);
+    }
+
+    function routeKey(address pair, address from, address to, bool stable, bool concentrated)
+        public
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(pair, from, to, stable, concentrated));
     }
 
     /// @inheritdoc IDEXAdapter
@@ -97,7 +110,9 @@ contract BlackholeAdapter is IDEXAdapter, Ownable2Step {
         for (uint256 i = 0; i < routes.length; i++) {
             if (i > 0 && routes[i].from != routes[i - 1].to) revert BadRoute();
             if (routes[i].receiver != ROUTER) revert InvalidReceiver(routes[i].receiver);
-            if (!allowedPools[routes[i].pair]) revert PoolNotAllowed(routes[i].pair);
+            bytes32 key =
+                routeKey(routes[i].pair, routes[i].from, routes[i].to, routes[i].stable, routes[i].concentrated);
+            if (!allowedRoutes[key]) revert RouteNotAllowed(key);
         }
     }
 }

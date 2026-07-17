@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { NotionalCaps } from "../src/caps.js";
 
-const USDC = "0xD3a5aaC492e43B160a41Fc766cf1A5000F560800";
+const USDC = "0x00B766567013BbCe12bF802f6E7C65F6da581Efe";
 const USDT = "0x0000000000000000000000000000000000000123";
 const DAY = 86_400_000;
 

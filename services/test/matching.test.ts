@@ -31,7 +31,7 @@ function stored(partial: Partial<Order> & { makingAmount: bigint; takingAmount: 
 }
 
 describe("cross condition (mirrors SeltraSettlement integer math)", () => {
-  it("crosses iff b.makingAmount * a.makingAmount >= a.takingAmount * b.takingAmount", () => {
+  it("crosses iff b.makingAmount >= a.takingAmount for the exact X leg", () => {
     // A sells 10 WAVAX for >= 400 USDC; B sells 405 USDC for 10 WAVAX.
     const a = stored({ makingAmount: 10n * 10n ** 18n, takingAmount: 400n * 10n ** 6n }, true);
     const b = stored({ makingAmount: 405n * 10n ** 6n, takingAmount: 10n * 10n ** 18n }, false);
@@ -41,7 +41,16 @@ describe("cross condition (mirrors SeltraSettlement integer math)", () => {
     expect(crosses(a.order, bLow.order)).toBe(false);
   });
 
-  /** Property test (spec 1.8): bigint math agrees with the on-chain formula
+  it("handles uint256 maxima without multiplication", () => {
+    const max = (1n << 256n) - 1n;
+    const a = stored({ makingAmount: max, takingAmount: max }, true);
+    const bLow = stored({ makingAmount: max - 1n, takingAmount: max }, false);
+    const bExact = stored({ makingAmount: max, takingAmount: max }, false);
+    expect(crosses(a.order, bLow.order)).toBe(false);
+    expect(crosses(a.order, bExact.order)).toBe(true);
+  });
+
+  /** Property test (spec 1.8): the reduced check agrees with the rational formula
    *  across a fuzzed corpus (the Foundry mirror is
    *  testFuzz_crossConditionMirrorsOnChain). */
   it("fuzzed corpus: division-free evaluation equals rational comparison", () => {

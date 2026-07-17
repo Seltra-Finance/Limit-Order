@@ -8,13 +8,10 @@ import {SeltraSettlement} from "../src/SeltraSettlement.sol";
 import {SeltraAggregationRouter} from "../src/SeltraAggregationRouter.sol";
 import {MockDEXAdapter} from "../src/adapters/MockDEXAdapter.sol";
 import {LFJLBAdapter} from "../src/adapters/LFJLBAdapter.sol";
-import {BlackholeAdapter} from "../src/adapters/BlackholeAdapter.sol";
 import {PharaohAdapter} from "../src/adapters/PharaohAdapter.sol";
 import {ISeltraAggregationRouter} from "../src/interfaces/ISeltraAggregationRouter.sol";
 import {ILBRouter} from "../src/interfaces/external/ILBRouter.sol";
 import {ILBQuoter} from "../src/interfaces/external/ILBQuoter.sol";
-import {IBlackholeRouterV2} from "../src/interfaces/external/IBlackholeRouterV2.sol";
-import {IBlackholeRouterHelper} from "../src/interfaces/external/IBlackholeRouterHelper.sol";
 import {IPharaohSwapRouter} from "../src/interfaces/external/IPharaohSwapRouter.sol";
 import {IPharaohQuoterV2} from "../src/interfaces/external/IPharaohQuoterV2.sol";
 
@@ -32,9 +29,6 @@ import {IPharaohQuoterV2} from "../src/interfaces/external/IPharaohQuoterV2.sol"
 ///   LFJ_LB_QUOTER          LBQuoter address (default: verified mainnet v2.1
 ///                          quoter; override on Fuji)
 ///   DEPLOY_MOCK_ADAPTER    default true; NEVER set on mainnet (spec 2.1)
-///   BLACKHOLE_ROUTER_V2    verified RouterV2; zero skips adapter 2
-///   BLACKHOLE_ROUTER_HELPER verified RouterHelper; zero skips adapter 2
-///   BLACKHOLE_ALLOWED_POOL_0..9 pools to permit before ownership handoff
 ///   PHARAOH_SWAP_ROUTER    immutable CL SwapRouter; zero skips adapter 3
 ///   PHARAOH_QUOTER_V2      CL QuoterV2; zero skips adapter 3
 ///   ALLOWED_TOKENS         comma-free: pass via ALLOWED_TOKEN_0..N below
@@ -43,7 +37,6 @@ contract Deploy is Script {
     address constant CANONICAL_PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
     uint8 constant MOCK_ADAPTER_ID = 0;
     uint8 constant LFJ_ADAPTER_ID = 1;
-    uint8 constant BLACKHOLE_ADAPTER_ID = 2;
     uint8 constant PHARAOH_ADAPTER_ID = 3;
 
     function run() external {
@@ -55,12 +48,6 @@ contract Deploy is Script {
         if (block.chainid == 43_114) require(!deployMock, "mock adapter forbidden on Avalanche mainnet");
         address lbRouter = vm.envOr("LFJ_LB_ROUTER", 0xb4315e873dBcf96Ffd0acd8EA43f689D8c20fB30);
         address lbQuoter = vm.envOr("LFJ_LB_QUOTER", 0x64b57F4249aA99a812212cee7DAEFEDC40B203cD);
-        address blackholeRouter = vm.envOr(
-            "BLACKHOLE_ROUTER_V2", block.chainid == 43_114 ? 0xe946A9f39312E2346BA79DAb865B0e9A74f2F981 : address(0)
-        );
-        address blackholeHelper = vm.envOr(
-            "BLACKHOLE_ROUTER_HELPER", block.chainid == 43_114 ? 0x53D569BC4B37ADbBDB6ab447D92ADf42514AE480 : address(0)
-        );
         address pharaohRouter = vm.envOr("PHARAOH_SWAP_ROUTER", 0xc8B8fCbDb5C019D7802fFb0b39603395D7d3915c);
         address pharaohQuoter = vm.envOr("PHARAOH_QUOTER_V2", 0xB7297301b7CC659BB96D51754643A0Df6eEA2138);
 
@@ -103,27 +90,11 @@ contract Deploy is Script {
             console.log("LFJ router/quoter unavailable; skipping adapter 1");
         }
         address blackhole;
-        if (
-            blackholeRouter != address(0) && blackholeHelper != address(0) && blackholeRouter.code.length > 0
-                && blackholeHelper.code.length > 0
-        ) {
-            blackhole = address(
-                new BlackholeAdapter(
-                    address(router),
-                    IBlackholeRouterV2(blackholeRouter),
-                    IBlackholeRouterHelper(blackholeHelper),
-                    deployer
-                )
-            );
-            for (uint256 i = 0; i < 10; i++) {
-                address pool = vm.envOr(string.concat("BLACKHOLE_ALLOWED_POOL_", vm.toString(i)), address(0));
-                if (pool != address(0)) BlackholeAdapter(blackhole).setPoolAllowed(pool, true);
-            }
-            if (owner != deployer) BlackholeAdapter(blackhole).transferOwnership(owner);
-            router.addAdapter(BLACKHOLE_ADAPTER_ID, blackhole);
-        } else {
-            console.log("Blackhole RouterV2/RouterHelper unavailable; skipping adapter 2");
-        }
+        // Adapter id 2 is intentionally left unregistered. Its allowlist now
+        // binds the full route tuple, but Blackhole RouterV2 derives standard
+        // pools upstream; registration waits for independent validation that
+        // each supported route key resolves to the intended executable pool.
+        console.log("Blackhole adapter disabled pending executable pool binding");
         address pharaoh;
         if (
             pharaohRouter != address(0) && pharaohQuoter != address(0) && pharaohRouter.code.length > 0

@@ -218,7 +218,7 @@ contract SeltraHandler is Test {
     function cancelNonce(uint256 nonce) external {
         nonce = bound(nonce, 0, 511);
         vm.prank(makerA);
-        permit2.invalidateUnorderedNonces(nonce >> 8, 1 << (nonce & 0xff));
+        permit2.invalidateUnorderedNonces(nonce >> 8, uint256(1) << (nonce & 0xff));
         consumed[makerA][nonce] = true;
     }
 

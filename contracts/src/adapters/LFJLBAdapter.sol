@@ -76,6 +76,7 @@ contract LFJLBAdapter is IDEXAdapter {
             }
         }
         if (amountIn > type(uint128).max) revert AmountTooLarge();
+        // forge-lint: disable-next-line(unsafe-typecast)
         ILBQuoter.Quote memory q = LB_QUOTER.findBestPathFromAmountIn(route, uint128(amountIn));
         return q.amounts[q.amounts.length - 1];
     }
@@ -92,9 +93,8 @@ contract LFJLBAdapter is IDEXAdapter {
             abi.decode(extra, (uint256, uint256[], ILBRouter.Version[], IERC20[]));
         // Pin the decoded path to the order-derived endpoints.
         if (
-            tokenPath.length < 2 || address(tokenPath[0]) != tokenIn
-                || address(tokenPath[tokenPath.length - 1]) != tokenOut || pairBinSteps.length != tokenPath.length - 1
-                || versions.length != pairBinSteps.length
+            tokenPath.length != 2 || address(tokenPath[0]) != tokenIn || address(tokenPath[1]) != tokenOut
+                || pairBinSteps.length != 1 || versions.length != 1
         ) revert BadPath();
         path = ILBRouter.Path({pairBinSteps: pairBinSteps, versions: versions, tokenPath: tokenPath});
     }

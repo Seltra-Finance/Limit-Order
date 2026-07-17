@@ -128,6 +128,9 @@ export class Keeper {
     versions: number[],
     tokenPath: string[],
   ): string {
+    if (tokenPath.length !== 2 || pairBinSteps.length !== 1 || versions.length !== 1) {
+      throw new Error("Seltra V1 supports only direct LFJ routes");
+    }
     return AbiCoder.defaultAbiCoder().encode(
       ["uint256", "uint256[]", "uint8[]", "address[]"],
       [deadlineSec, pairBinSteps, versions, tokenPath],

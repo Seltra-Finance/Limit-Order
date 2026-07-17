@@ -5,6 +5,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ISignatureTransfer} from "permit2/src/interfaces/ISignatureTransfer.sol";
 
 import {Order, OrderLib} from "./libraries/OrderLib.sol";
@@ -51,6 +52,8 @@ contract SeltraSettlement is ReentrancyGuard, Ownable2Step {
     error NotGuardian();
     error BadFeeParams();
     error ZeroAddress();
+    error ZeroAmount();
+    error UnsupportedToken(address token);
 
     // ---------------------------------------------------------------- events
 
@@ -180,14 +183,14 @@ contract SeltraSettlement is ReentrancyGuard, Ownable2Step {
         // keeper side deterministically; the protocol fee floor-rounds off the
         // keeper side.
         uint256 surplus = amountOut - order.takingAmount;
-        uint256 makerImprovement = (surplus * makerSurplusBps) / 10_000;
+        uint256 makerImprovement = Math.mulDiv(surplus, makerSurplusBps, 10_000);
         uint256 keeperSide = surplus - makerImprovement;
-        uint256 protocolFee = (keeperSide * protocolFeeBps) / 10_000;
+        uint256 protocolFee = Math.mulDiv(keeperSide, protocolFeeBps, 10_000);
         uint256 keeperReward = keeperSide - protocolFee;
 
-        takerAsset.safeTransfer(order.receiver, order.takingAmount + makerImprovement);
-        if (keeperReward > 0) takerAsset.safeTransfer(msg.sender, keeperReward);
-        if (protocolFee > 0) takerAsset.safeTransfer(treasury, protocolFee);
+        _safeTransferExact(takerAsset, order.receiver, order.takingAmount + makerImprovement);
+        _safeTransferExact(takerAsset, msg.sender, keeperReward);
+        _safeTransferExact(takerAsset, treasury, protocolFee);
 
         emit OrderFilledDEX(
             orderHash,
@@ -214,10 +217,9 @@ contract SeltraSettlement is ReentrancyGuard, Ownable2Step {
     ///         crossed spread appears as surplus in Y:
     ///         `surplusY = b.makingAmount - a.takingAmount`.
     ///
-    ///         Price crossing is checked division-free by integer
-    ///         cross-multiplication: B's max price >= A's min price iff
-    ///         `b.makingAmount * a.makingAmount >= a.takingAmount * b.takingAmount`
-    ///         (0.8 checked math; overflow reverts).
+    ///         Because the X leg is exact and amounts are nonzero, price
+    ///         crossing reduces exactly to `b.makingAmount >= a.takingAmount`.
+    ///         This avoids overflow-prone cross multiplication.
     function fillOrderP2P(
         Order calldata a,
         ISignatureTransfer.PermitTransferFrom calldata permitA,
@@ -231,7 +233,7 @@ contract SeltraSettlement is ReentrancyGuard, Ownable2Step {
 
         if (a.makerAsset != b.takerAsset || a.takerAsset != b.makerAsset) revert AssetMismatch();
         if (a.makingAmount != b.takingAmount) revert SizeMismatch();
-        if (b.makingAmount * a.makingAmount < a.takingAmount * b.takingAmount) revert PriceNotCrossed();
+        if (b.makingAmount < a.takingAmount) revert PriceNotCrossed();
 
         bytes32 hashA = a.hash();
         bytes32 hashB = b.hash();
@@ -241,24 +243,24 @@ contract SeltraSettlement is ReentrancyGuard, Ownable2Step {
         _permitWitnessPull(b, permitB, sigB, hashB);
 
         // X leg is exact: all of A's X goes to B's receiver.
-        IERC20(a.makerAsset).safeTransfer(b.receiver, a.makingAmount);
+        _safeTransferExact(IERC20(a.makerAsset), b.receiver, a.makingAmount);
 
         // Y leg: A's signed minimum first, then the surplus split. The maker
         // share is split evenly between both receivers (both makers formed the
         // cross); division dust lands on the keeper side.
         uint256 surplusY = b.makingAmount - a.takingAmount; // nonnegative given the checks above
-        uint256 makerShare = (surplusY * makerSurplusBps) / 10_000;
+        uint256 makerShare = Math.mulDiv(surplusY, makerSurplusBps, 10_000);
         uint256 shareA = makerShare / 2;
         uint256 shareB = makerShare - shareA;
         uint256 keeperSide = surplusY - makerShare;
-        uint256 protocolFee = (keeperSide * protocolFeeBps) / 10_000;
+        uint256 protocolFee = Math.mulDiv(keeperSide, protocolFeeBps, 10_000);
         uint256 keeperReward = keeperSide - protocolFee;
 
         IERC20 quote = IERC20(b.makerAsset);
-        quote.safeTransfer(a.receiver, a.takingAmount + shareA);
-        if (shareB > 0) quote.safeTransfer(b.receiver, shareB);
-        if (keeperReward > 0) quote.safeTransfer(msg.sender, keeperReward);
-        if (protocolFee > 0) quote.safeTransfer(treasury, protocolFee);
+        _safeTransferExact(quote, a.receiver, a.takingAmount + shareA);
+        _safeTransferExact(quote, b.receiver, shareB);
+        _safeTransferExact(quote, msg.sender, keeperReward);
+        _safeTransferExact(quote, treasury, protocolFee);
 
         emit OrderFilledP2P(hashA, hashB, surplusY, shareA, shareB, keeperReward);
     }
@@ -322,6 +324,7 @@ contract SeltraSettlement is ReentrancyGuard, Ownable2Step {
     function _checkOrder(Order calldata order, ISignatureTransfer.PermitTransferFrom calldata permit) internal view {
         if (order.maker == address(0)) revert BadMaker();
         if (order.receiver == address(0)) revert BadReceiver();
+        if (order.makingAmount == 0 || order.takingAmount == 0) revert ZeroAmount();
         if (block.timestamp > order.expiry) revert OrderExpired();
         if (order.epoch != currentEpoch[order.maker]) revert InvalidEpoch();
         if (order.allowedSender != address(0) && order.allowedSender != msg.sender) revert PrivateOrder();
@@ -347,5 +350,18 @@ contract SeltraSettlement is ReentrancyGuard, Ownable2Step {
             OrderLib.WITNESS_TYPE_STRING,
             signature
         );
+    }
+
+    /// @dev V1 supports only tokens whose transfers deliver the exact amount
+    ///      to the recipient. This enforces the allowlist policy at runtime,
+    ///      so transfer fees or balance anomalies cannot be hidden by surplus.
+    function _safeTransferExact(IERC20 token, address to, uint256 amount) internal {
+        if (amount == 0) return;
+        uint256 balanceBefore = token.balanceOf(to);
+        token.safeTransfer(to, amount);
+        uint256 balanceAfter = token.balanceOf(to);
+        if (balanceAfter < balanceBefore || balanceAfter - balanceBefore != amount) {
+            revert UnsupportedToken(address(token));
+        }
     }
 }

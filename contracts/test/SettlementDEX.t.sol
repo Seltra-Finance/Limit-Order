@@ -151,6 +151,22 @@ contract SettlementDEXTest is SeltraTestBase {
         settlement.fillOrderDEX(order, permit, sig, _route());
     }
 
+    function test_fill_revert_zeroAmounts() public {
+        Order memory order = _defaultOrder();
+        order.makingAmount = 0;
+        (ISignatureTransfer.PermitTransferFrom memory permit, bytes memory sig) = _signed(makerKey, order, 0);
+        vm.expectRevert(SeltraSettlement.ZeroAmount.selector);
+        vm.prank(keeper);
+        settlement.fillOrderDEX(order, permit, sig, _route());
+
+        order = _defaultOrder();
+        order.takingAmount = 0;
+        (permit, sig) = _signed(makerKey, order, 1);
+        vm.expectRevert(SeltraSettlement.ZeroAmount.selector);
+        vm.prank(keeper);
+        settlement.fillOrderDEX(order, permit, sig, _route());
+    }
+
     function test_fill_revert_permitOrderConsistency() public {
         Order memory order = _defaultOrder();
 
@@ -251,6 +267,25 @@ contract SettlementDEXTest is SeltraTestBase {
         (ISignatureTransfer.PermitTransferFrom memory permit, bytes memory sig) = _signed(makerKey, order, 0);
 
         vm.expectRevert(SeltraSettlement.InsufficientOutput.selector);
+        vm.prank(keeper);
+        settlement.fillOrderDEX(order, permit, sig, _route());
+    }
+
+    /// @dev A large pre-fee surplus must not mask a transfer fee charged when
+    ///      settlement pays the receiver.
+    function test_fill_feeOnTransferTakerAsset_revertsOnNonExactPayout() public {
+        FeeOnTransferERC20 fee = new FeeOnTransferERC20(500); // 5% fee
+        _allowToken(address(fee));
+        fee.mint(address(mock), 1_000_000e18);
+        vm.prank(owner);
+        mock.setPrice(address(wavax), address(fee), 50e18);
+
+        Order memory order = _defaultOrder();
+        order.takerAsset = address(fee);
+        order.takingAmount = 400e18;
+        (ISignatureTransfer.PermitTransferFrom memory permit, bytes memory sig) = _signed(makerKey, order, 0);
+
+        vm.expectRevert(abi.encodeWithSelector(SeltraSettlement.UnsupportedToken.selector, address(fee)));
         vm.prank(keeper);
         settlement.fillOrderDEX(order, permit, sig, _route());
     }

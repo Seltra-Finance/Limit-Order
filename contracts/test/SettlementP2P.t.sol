@@ -107,6 +107,20 @@ contract SettlementP2PTest is SeltraTestBase {
         settlement.fillOrderP2P(a, permitA, sigA, b, permitB, sigB);
     }
 
+    function test_p2p_maxAmountsDoNotOverflowCrossCheck() public {
+        (Order memory a, Order memory b) = _crossingPair();
+        a.makingAmount = type(uint256).max;
+        a.takingAmount = type(uint256).max;
+        b.takingAmount = type(uint256).max;
+        b.makingAmount = type(uint256).max - 1;
+
+        (ISignatureTransfer.PermitTransferFrom memory permitA, bytes memory sigA) = _signed(makerKey, a, 10);
+        (ISignatureTransfer.PermitTransferFrom memory permitB, bytes memory sigB) = _signed(makerBKey, b, 20);
+        vm.expectRevert(SeltraSettlement.PriceNotCrossed.selector);
+        vm.prank(keeper);
+        settlement.fillOrderP2P(a, permitA, sigA, b, permitB, sigB);
+    }
+
     function test_p2p_revert_assetMismatch() public {
         (Order memory a, Order memory b) = _crossingPair();
         b.makerAsset = address(wavax);
@@ -175,8 +189,8 @@ contract SettlementP2PTest is SeltraTestBase {
         settlement.fillOrderP2P(a, permitA, sigA, b, permitB, sigB);
     }
 
-    /// @dev Property test mirror (spec 1.8): the on-chain integer
-    ///      cross-multiplication decides fill vs PriceNotCrossed exactly; the
+    /// @dev Property test mirror (spec 1.8): the overflow-safe reduced
+    ///      comparison decides fill vs PriceNotCrossed exactly; the
     ///      off-chain engine's bigint math must agree (mirrored in
     ///      services/test/matching.test.ts over the same corpus).
     function testFuzz_crossConditionMirrorsOnChain(uint128 makingA, uint128 takingA, uint128 makingB) public {
@@ -193,7 +207,7 @@ contract SettlementP2PTest is SeltraTestBase {
         wavax.mint(maker, makingA);
         usdc.mint(makerB, makingB);
 
-        bool crossed = uint256(makingB) * uint256(makingA) >= uint256(takingA) * uint256(makingA);
+        bool crossed = makingB >= takingA;
 
         (ISignatureTransfer.PermitTransferFrom memory permitA, bytes memory sigA) = _signed(makerKey, a, 10);
         (ISignatureTransfer.PermitTransferFrom memory permitB, bytes memory sigB) = _signed(makerBKey, b, 20);

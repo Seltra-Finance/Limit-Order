@@ -6,9 +6,9 @@ pragma solidity 0.8.24;
 ///         `swap`; the adapter must deliver the output to `msg.sender` (the
 ///         router) and return the realized amount.
 interface IDEXAdapter {
-    /// @param extra Opaque, adapter-specific route encoding: bin steps and
-    ///        versions for LFJ, route structs for Blackhole, an int24 tick
-    ///        spacing for Pharaoh, nothing for mock.
+    /// @param extra Opaque, adapter-specific route encoding: deadline, bin
+    ///        step and version for LFJ; route structs for Blackhole; deadline
+    ///        and int24 tick spacing for Pharaoh; nothing for mock.
     function swap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minOut, bytes calldata extra)
         external
         returns (uint256 amountOut);
