@@ -26,7 +26,10 @@ CREATE INDEX IF NOT EXISTS idx_orders_maker ON orders (maker);
 
 CREATE TABLE IF NOT EXISTS fills (
     id                SERIAL PRIMARY KEY,
-    order_hash        TEXT NOT NULL REFERENCES orders (order_hash),
+    -- Deliberately not a foreign key: the chain indexer must be able to
+    -- reconcile fills submitted through another API instance or after a book
+    -- database restore even when the original signed order row is absent.
+    order_hash        TEXT NOT NULL,
     path              TEXT NOT NULL CHECK (path IN ('dex', 'p2p')),
     adapter_id        SMALLINT,
     keeper            TEXT NOT NULL,
@@ -34,13 +37,22 @@ CREATE TABLE IF NOT EXISTS fills (
     amount_out        NUMERIC(78, 0) NOT NULL,
     maker_improvement NUMERIC(78, 0) NOT NULL,
     keeper_reward     NUMERIC(78, 0) NOT NULL,
-    block_number      BIGINT NOT NULL
+    block_number      BIGINT NOT NULL,
+    UNIQUE (order_hash, tx_hash, path)
 );
 
 -- Backward-compatible migration for databases created before venue attribution.
 ALTER TABLE fills ADD COLUMN IF NOT EXISTS adapter_id SMALLINT;
+ALTER TABLE fills DROP CONSTRAINT IF EXISTS fills_order_hash_fkey;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_event ON fills (order_hash, tx_hash, path);
 
 CREATE TABLE IF NOT EXISTS maker_epochs (
     maker TEXT PRIMARY KEY,
     epoch NUMERIC(78, 0) NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS indexer_state (
+    name         TEXT PRIMARY KEY,
+    block_number BIGINT NOT NULL CHECK (block_number >= 0),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );

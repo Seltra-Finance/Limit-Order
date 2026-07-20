@@ -1,8 +1,7 @@
-import { Contract, type Provider } from "ethers";
-
-import { ROUTER_ABI } from "./abi.js";
+import type { Provider } from "ethers";
 import type { SeltraConfig } from "./config.js";
 import type { Order, PermitTransferFrom } from "./types.js";
+import { VenueQuoteCoordinator } from "./venues.js";
 
 /**
  * Market orders (frontend/SDK concern, no contract changes).
@@ -89,9 +88,9 @@ export async function quoteMarketOut(
   takerAsset: string,
   makingAmount: bigint,
 ): Promise<bigint> {
-  const router = new Contract(config.router, ROUTER_ABI, provider);
-  if (!(await router.isRegistered(config.dexAdapterId))) {
-    throw new Error(`DEX adapter ${config.dexAdapterId} is unavailable or paused`);
-  }
-  return BigInt(await router.quote.staticCall(config.dexAdapterId, makerAsset, takerAsset, makingAmount, "0x"));
+  return (await new VenueQuoteCoordinator(config, provider).quoteBest(
+    makerAsset,
+    takerAsset,
+    makingAmount,
+  )).amountOut;
 }

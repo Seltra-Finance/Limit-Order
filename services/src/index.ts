@@ -10,12 +10,14 @@ import { emitAlert, SeltraMonitor } from "./monitor.js";
 import { MemoryStore } from "./store.js";
 import { PgStore } from "./pgStore.js";
 import { PriceWatcher } from "./watcher.js";
+import { preflightRuntime } from "./preflight.js";
 
 /** Boots the full off-chain stack: orderbook API + matching engine + price
  *  watcher + keeper + indexer, wired together (revised spec 1.7-1.9). */
 async function main(): Promise<void> {
   const config = loadConfig();
   const provider = new JsonRpcProvider(config.rpcUrl, config.chainId);
+  await preflightRuntime(config, provider);
   const store = config.databaseUrl ? new PgStore(config.databaseUrl) : new MemoryStore();
   const settlement = new Contract(config.settlement, SETTLEMENT_ABI, provider);
 
@@ -38,14 +40,16 @@ async function main(): Promise<void> {
     if (!keeper) return;
     void keeper.tryFillP2P(match).then((ok) => {
       if (ok) engine.settleMatch(match);
-      else engine.releaseMatch(match, true, true); // re-evaluated; indexer prunes dead orders
+      // Release without immediately matching the same pair again. A new book
+      // mutation can re-evaluate it; the indexer prunes dead orders.
+      else engine.releaseMatch(match, true, true, false);
     });
   });
 
   const api = buildApi({
     config,
     store,
-    onNewOrder: (o) => engine.add(o),
+    onNewOrder: keeper ? (o) => engine.add(o) : undefined,
     chain: {
       epochOf: async (maker) => BigInt(await settlement.currentEpoch(maker)),
       balanceOf: async (token, owner) => BigInt(await new Contract(token, ERC20_ABI, provider).balanceOf(owner)),
@@ -55,8 +59,8 @@ async function main(): Promise<void> {
     },
   });
 
-  const watcher = new PriceWatcher(config, provider, store, (order, quotedOut) => {
-    if (keeper) void keeper.tryFillDEX(order, quotedOut);
+  const watcher = new PriceWatcher(config, provider, store, (order, quote) => {
+    if (keeper) void keeper.tryFillDEX(order, quote);
   });
 
   const indexer = new Indexer(config, provider, store, {
@@ -71,16 +75,33 @@ async function main(): Promise<void> {
   });
 
   await indexer.start();
+  const now = BigInt(Math.floor(Date.now() / 1000));
+  for (const order of await store.listOrders({ status: "resting" })) {
+    if (order.order.expiry <= now) await store.setStatus(order.orderHash, "expired");
+    else if (keeper) engine.add(order);
+  }
   await monitor.start();
   watcher.start();
-  await api.listen({ port: config.apiPort, host: "0.0.0.0" });
-  console.log(`Seltra orderbook API on :${config.apiPort} (chain ${config.chainId})`);
 
   // Dashboard endpoint: rolling metrics snapshot (fills, match rate, surplus).
   api.get("/metrics", async () => ({
     ...monitor.metrics.snapshot(),
     fillsPerMinute: monitor.metrics.fillsPerMinute(),
   }));
+
+  const shutdown = async (signal: string) => {
+    console.log(`received ${signal}; shutting down`);
+    watcher.stop();
+    indexer.stop();
+    monitor.stop();
+    await api.close();
+    await store.close?.();
+  };
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
+  process.once("SIGINT", () => void shutdown("SIGINT"));
+
+  await api.listen({ port: config.apiPort, host: config.apiHost });
+  console.log(`Seltra orderbook API on ${config.apiHost}:${config.apiPort} (chain ${config.chainId})`);
 }
 
 main().catch((err) => {

@@ -15,21 +15,29 @@ contracts/            Foundry project (Solidity 0.8.24)
                                  surplus split, guardian pause, token allowlist
     SeltraAggregationRouter.sol   settlement-only router, write-once adapter ids,
                                  per-adapter guardian pause
+    SeltraArbExecutor.sol         isolated treasury-funded, atomic two-venue
+                                 arbitrage; never consumes Seltra orders
     libraries/OrderLib.sol       Order struct, witness typehash + type string
     adapters/
       LFJLBAdapter.sol           V1 production adapter (LFJ Liquidity Book)
-      BlackholeAdapter.sol       quarantined Blackhole pre-work, full-route gated
+      BlackholeAdapter.sol       full-route-gated Blackhole launch adapter
       PharaohAdapter.sol         Pharaoh concentrated-liquidity adapter
       MockDEXAdapter.sol         Fuji/testing adapter with settable price
   test/                unit, fuzz, invariant suites; fork tests in test/fork
   script/Deploy.s.sol  one-command stack deploy, writes addresses.json
+  script/DeployArbExecutor.s.sol  separate arb executor + dedicated adapters;
+                                 never funds or trades from the deploy script
 services/             TypeScript off-chain stack (Node 20+, ESM)
   src/
     permit2.ts         witness signing/hashing SDK (cross-checked vs Foundry)
     api.ts             orderbook REST + WebSocket (Fastify)
     matching.ts        continuous exact-size P2P matcher (overflow-safe comparison)
     watcher.ts         pool-state price watcher (per-order fillability)
-    keeper.ts          simulate-then-submit keeper bot
+    keeper.ts          route-bound, gas-aware simulate-then-submit keeper bot
+    arbitrage.ts       cross-venue search, gas-aware profit bounds, execution,
+                       and realized P&L accounting
+    strategies.ts      bounded grid/DCA strategy lifecycle; martingale is
+                       disabled unless explicitly feature-gated
     indexer.ts         event reconciler (fills, epochs, Permit2 cancels)
     store.ts/pgStore.ts  MemoryStore + Postgres store (schema.sql)
 ```
@@ -90,9 +98,9 @@ deploying from vendored bytecode only if the chain lacks it, wires
 router/settlement/adapters, applies the token allowlist, optionally hands
 ownership to `OWNER` (multisig/timelock), and writes a deployment manifest.
 `DEPLOY_MOCK_ADAPTER=false` for mainnet (the mock must never be registered
-there). Adapter ids are `0` mock, `1` LFJ, and `3` Pharaoh. ID `2` remains
-reserved for Blackhole but is deliberately not registered by the production
-deploy script until executable pool binding receives independent validation.
+there). Adapter ids are `0` mock, `1` LFJ, `2` Blackhole, and `3` Pharaoh.
+Mainnet Blackhole registration is pinned to the fork-validated WAVAX/USDC and
+USDC/USDt concentrated pools in `Deploy.s.sol`.
 
 Then run the off-chain stack:
 
@@ -104,8 +112,44 @@ PAIRS='{"WAVAX/USDC":{"base":"0x760D...","quote":"0x00B7..."}}' \
 npm run dev
 ```
 
-Postgres is optional: set `DATABASE_URL` (apply `services/schema.sql` first) or
-run on the in-memory store for dev.
+Postgres is mandatory on mainnet (apply `services/schema.sql` first); the
+in-memory store remains available only for development. Copy
+`services/.env.mainnet.example` for the strict production configuration.
+The indexer resumes from a durable finalized-block checkpoint and replays
+idempotently. Soft orderbook cancellation requires a maker signature over
+`Seltra soft cancel\nchainId:<id>\norderHash:<lowercase hash>`; binding
+cancellation remains Permit2 nonce invalidation or an epoch bump on-chain.
+
+## Cross-DEX arbitrage and automation foundation
+
+The arbitrage path is deliberately isolated from `SeltraSettlement` and the
+public orderbook. `SeltraArbExecutor` can execute only a two-leg round trip
+through two different write-once adapters, only for owner-allowlisted tokens,
+and reverts atomically unless the starting-token balance grows by the required
+minimum profit. Realized profit goes to the configured treasury; principal
+stays in the executor. This activity is protocol-owned liquidity management,
+not user order flow and must not be reported as Seltra volume or traction.
+
+`services/src/arbitrage.ts` provides the corresponding off-chain primitives:
+venue quotes, a two-leg slippage reserve, gas-cost conversion into the starting
+token, exact-call simulation/submission, an in-flight guard, and realized P&L
+records. `services/src/arbBot.ts` adds a dry-run-by-default continuous runner
+with RPC failover, quote-age and gas-price gates, cooldowns, nonce locking,
+circuit breaking, an append-only JSONL journal, and optional webhook alerts.
+Run one non-submitting scan with `cd services && npm run arb:dry-run`; configure
+it from `.env.arb.example`. Live mode is separately triple-gated and validates
+the deployed executor before constructing a signer. `DeployArbExecutor.s.sol`
+only deploys and configures the isolated contracts. It does not fund the
+executor or submit a trade.
+
+`services/src/strategies.ts` starts the user-automation control plane with
+bounded finite-grid and DCA schemas, lifecycle transitions, expiry, per-order,
+daily, and total-notional limits. Martingale remains disabled by default and,
+even when feature-gated for development, is capped at six steps and 2x. These
+are backend safety primitives—not authorization to trade user funds. A future
+DCA executor still needs an explicit user authorization model (finite
+pre-signatures or audited smart-account session permissions) before it can be
+connected to live execution.
 
 ## Key invariants (enforced on-chain, verified in tests)
 
@@ -142,7 +186,8 @@ can still match P2P for zero slippage.
 - **Governance**: `contracts/script/Governance.s.sol` deploys an OZ
   `TimelockController` (48h default; self-administered, multisig as
   proposer/executor) and walks the Ownable2Step handover of settlement +
-  router through it (`deploy` → wait → `acceptOwnership`), plus generic
+  router + the Blackhole adapter through it (`deploy` → wait →
+  `acceptOwnership`), plus generic
   `schedule`/`execute` for any owner action. A replacement topology is live on
   Fuji with Safe guardian
   `0x14A34367a552e40B136Ac4b8c3E3970Be2d6eE77` and 48-hour Timelock
@@ -169,13 +214,12 @@ can still match P2P for zero slippage.
   the keeper inside `extra` and pins both path endpoints to the order.
 - Pharaoh `extra` is `abi.encode(uint256 deadline, int24 tickSpacing)`; the
   adapter rejects expired deadlines and forwards the keeper value unchanged.
-- The mainnet LBQuoter v2.1 in the fork tests was verified live on-chain at
-  `0x64b57F4249aA99a812212cee7DAEFEDC40B203cD`; the LBRouter v2.1 address is
-  the documented `0xb4315e873dBcf96Ffd0acd8EA43f689D8c20fB30`.
+- The LFJ V2.1 fork tests use the currently documented Avalanche LBQuoter
+  `0xd76019A16606FDa4651f636D9751f500Ed776250` and LBRouter
+  `0xb4315e873dBcf96Ffd0acd8EA43f689D8c20fB30`.
 - Blackhole route authorization binds the pair, endpoints, stable flag, and
-  concentrated flag into one allowlist key. The adapter remains unregistered
-  in V1 while its upstream pool-resolution behavior receives independent
-  validation. Pharaoh quotes use its deployed non-view QuoterV2 through
+  concentrated flag into one allowlist key. The two initial pool bindings are
+  independently quoted and swap-tested on an Avalanche mainnet fork. Pharaoh quotes use its deployed non-view QuoterV2 through
   client-side `eth_call`/`staticCall`.
 - Goldsky subgraph manifests are not included; `services/src/indexer.ts` is the
   local reconciler over the same events and is the source of truth for the

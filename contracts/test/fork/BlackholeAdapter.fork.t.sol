@@ -13,18 +13,19 @@ import {IBlackholeRouterV2} from "../../src/interfaces/external/IBlackholeRouter
 import {IBlackholeRouterHelper} from "../../src/interfaces/external/IBlackholeRouterHelper.sol";
 import {Order, OrderLib} from "../../src/libraries/OrderLib.sol";
 
-/// @notice V1.5 pre-work (revised spec 6.2): the Blackhole adapter is written
-///         and fork-testable but NOT registered in V1. Blackhole's RouterV2
+/// @notice Mainnet release gate for Blackhole's two launch pools. RouterV2
 ///         addresses are sourced from Blackhole's current official app bundle
 ///         and verified on-chain. The suite is skipped unless
 ///         RUN_MAINNET_FORKS=true and then requires AVAX_RPC_URL.
 contract BlackholeAdapterForkTest is Test {
     address constant WAVAX = 0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7;
     address constant USDC = 0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E;
+    address constant USDT = 0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7;
     IBlackholeRouterV2 constant BH_ROUTER = IBlackholeRouterV2(0xe946A9f39312E2346BA79DAb865B0e9A74f2F981);
     IBlackholeRouterHelper constant BH_HELPER = IBlackholeRouterHelper(0x53D569BC4B37ADbBDB6ab447D92ADf42514AE480);
     ISignatureTransfer constant PERMIT2 = ISignatureTransfer(0x000000000022D473030F116dDEE9F6B43aC78BA3);
     address constant WAVAX_USDC_POOL = 0x41100C6D2c6920B10d12Cd8D59c8A9AA2eF56fC7;
+    address constant USDC_USDT_POOL = 0x859592A4A469610E573f96Ef87A0e5565F9a94c8;
     uint8 constant BLACKHOLE_ADAPTER_ID = 2;
 
     SeltraAggregationRouter internal router;
@@ -59,17 +60,25 @@ contract BlackholeAdapterForkTest is Test {
         router.addAdapter(BLACKHOLE_ADAPTER_ID, address(adapter));
         settlement.setTokenAllowed(WAVAX, true);
         settlement.setTokenAllowed(USDC, true);
+        settlement.setTokenAllowed(USDT, true);
         vm.stopPrank();
 
         deal(WAVAX, maker, 100e18);
         vm.prank(maker);
         IERC20(WAVAX).approve(address(PERMIT2), type(uint256).max);
+        deal(USDC, maker, 20_000e6);
+        vm.prank(maker);
+        IERC20(USDC).approve(address(PERMIT2), type(uint256).max);
     }
 
     function _route(address tokenIn, address tokenOut) internal view returns (bytes memory extra) {
+        return _routeAt(pool, tokenIn, tokenOut);
+    }
+
+    function _routeAt(address routePool, address tokenIn, address tokenOut) internal view returns (bytes memory extra) {
         IBlackholeRouterV2.route[] memory routes = new IBlackholeRouterV2.route[](1);
         routes[0] = IBlackholeRouterV2.route({
-            pair: pool, from: tokenIn, to: tokenOut, stable: false, concentrated: true, receiver: address(router)
+            pair: routePool, from: tokenIn, to: tokenOut, stable: false, concentrated: true, receiver: address(router)
         });
         extra = abi.encode(block.timestamp + 60, routes);
     }
@@ -195,6 +204,7 @@ contract BlackholeAdapterForkTest is Test {
             deadline: order.expiry
         });
         bytes memory signature = _signWitness(order, permit);
+        uint256 makerUsdcBefore = IERC20(USDC).balanceOf(maker);
 
         vm.prank(keeper);
         uint256 amountOut = settlement.fillOrderDEX(
@@ -205,10 +215,71 @@ contract BlackholeAdapterForkTest is Test {
         assertGe(amountOut, (quotedOut * 99) / 100, "realized within 1% of quote");
         uint256 surplus = amountOut - takingAmount;
         uint256 improvement = (surplus * 7_000) / 10_000;
-        assertEq(IERC20(USDC).balanceOf(maker), takingAmount + improvement, "maker payment");
+        assertEq(IERC20(USDC).balanceOf(maker) - makerUsdcBefore, takingAmount + improvement, "maker payment");
         assertEq(IERC20(USDC).balanceOf(keeper), surplus - improvement, "keeper reward");
         assertEq(IERC20(USDC).balanceOf(address(settlement)), 0, "no settlement USDC residue");
         assertEq(IERC20(WAVAX).balanceOf(address(settlement)), 0, "no settlement WAVAX residue");
+    }
+
+    function test_fork_usdcUsdtQuotesBothDirectionsThroughPinnedPool() public {
+        vm.startPrank(owner);
+        adapter.setRouteAllowed(USDC_USDT_POOL, USDC, USDT, false, true, true);
+        adapter.setRouteAllowed(USDC_USDT_POOL, USDT, USDC, false, true, true);
+        vm.stopPrank();
+
+        uint256 usdc100 = router.quote(BLACKHOLE_ADAPTER_ID, USDC, USDT, 100e6, _routeAt(USDC_USDT_POOL, USDC, USDT));
+        uint256 usdc5000 = router.quote(BLACKHOLE_ADAPTER_ID, USDC, USDT, 5_000e6, _routeAt(USDC_USDT_POOL, USDC, USDT));
+        uint256 usdt100 = router.quote(BLACKHOLE_ADAPTER_ID, USDT, USDC, 100e6, _routeAt(USDC_USDT_POOL, USDT, USDC));
+        uint256 usdt5000 = router.quote(BLACKHOLE_ADAPTER_ID, USDT, USDC, 5_000e6, _routeAt(USDC_USDT_POOL, USDT, USDC));
+
+        assertGt(usdc100, 99e6, "USDC -> USDt 100 below launch gate");
+        assertLt(usdc100, 101e6, "USDC -> USDt 100 above launch gate");
+        assertGt(usdc5000, 4_950e6, "USDC -> USDt 5000 below launch gate");
+        assertLt(usdc5000, 5_050e6, "USDC -> USDt 5000 above launch gate");
+        assertGt(usdt100, 99e6, "USDt -> USDC 100 below launch gate");
+        assertLt(usdt100, 101e6, "USDt -> USDC 100 above launch gate");
+        assertGt(usdt5000, 4_950e6, "USDt -> USDC 5000 below launch gate");
+        assertLt(usdt5000, 5_050e6, "USDt -> USDC 5000 above launch gate");
+        assertApproxEqRel(usdc5000 / 50, usdc100, 0.005e18, "USDC -> USDt size impact over 50 bps");
+        assertApproxEqRel(usdt5000 / 50, usdt100, 0.005e18, "USDt -> USDC size impact over 50 bps");
+    }
+
+    function test_fork_fullDEXFillUsdcToUsdt() public {
+        vm.prank(owner);
+        adapter.setRouteAllowed(USDC_USDT_POOL, USDC, USDT, false, true, true);
+
+        uint256 amountIn = 5_000e6;
+        bytes memory extra = _routeAt(USDC_USDT_POOL, USDC, USDT);
+        uint256 quotedOut = router.quote(BLACKHOLE_ADAPTER_ID, USDC, USDT, amountIn, extra);
+        uint256 takingAmount = (quotedOut * 9_950) / 10_000;
+        Order memory order = Order({
+            maker: maker,
+            receiver: maker,
+            makerAsset: USDC,
+            takerAsset: USDT,
+            makingAmount: amountIn,
+            takingAmount: takingAmount,
+            salt: 3,
+            epoch: 0,
+            expiry: uint40(block.timestamp + 1 hours),
+            allowedSender: address(0),
+            flags: 0
+        });
+        ISignatureTransfer.PermitTransferFrom memory permit = ISignatureTransfer.PermitTransferFrom({
+            permitted: ISignatureTransfer.TokenPermissions({token: USDC, amount: amountIn}),
+            nonce: 9,
+            deadline: order.expiry
+        });
+
+        vm.prank(keeper);
+        uint256 amountOut = settlement.fillOrderDEX(
+            order, permit, _signWitness(order, permit), RouteData({adapterId: BLACKHOLE_ADAPTER_ID, extra: extra})
+        );
+
+        assertGe(amountOut, takingAmount, "maker invariant");
+        assertGe(amountOut, (quotedOut * 9_990) / 10_000, "realized outside 10 bps quote tolerance");
+        assertEq(IERC20(USDT).balanceOf(address(settlement)), 0, "no settlement USDt residue");
+        assertEq(IERC20(USDC).balanceOf(address(settlement)), 0, "no settlement USDC residue");
     }
 
     function test_fork_poolNotAllowlistedReverts() public {

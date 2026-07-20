@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Format
+        working-directory: contracts
+        run: forge fmt --check
+      - name: Build
+        working-directory: contracts
+        run: forge build --sizes
+      - name: Unit, fuzz, and invariant tests
+        working-directory: contracts
+        run: forge test
+
+  services:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: services/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
+
+  mainnet-fork:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Mainnet venue release gates
+        working-directory: contracts
+        env:
+          RUN_MAINNET_FORKS: "true"
+          AVAX_RPC_URL: ${{ secrets.AVAX_RPC_URL }}
+        run: forge test --match-path 'test/fork/*.t.sol'

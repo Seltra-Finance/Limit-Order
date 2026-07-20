@@ -6,6 +6,13 @@ export const SETTLEMENT_ABI = [
   "function hashOrder((address maker,address receiver,address makerAsset,address takerAsset,uint256 makingAmount,uint256 takingAmount,uint256 salt,uint256 epoch,uint40 expiry,address allowedSender,uint8 flags) order) view returns (bytes32)",
   "function currentEpoch(address maker) view returns (uint256)",
   "function fillsPaused() view returns (bool)",
+  "function PERMIT2() view returns (address)",
+  "function ROUTER() view returns (address)",
+  "function owner() view returns (address)",
+  "function pendingOwner() view returns (address)",
+  "function guardian() view returns (address)",
+  "function makerSurplusBps() view returns (uint16)",
+  "function protocolFeeBps() view returns (uint16)",
   "function allowedTokens(address token) view returns (bool)",
   "function incrementEpoch()",
   "function pauseFills()",
@@ -20,6 +27,11 @@ export const SETTLEMENT_ABI = [
 export const ROUTER_ABI = [
   "function quote(uint8 adapterId, address tokenIn, address tokenOut, uint256 amountIn, bytes extra) returns (uint256 amountOut)",
   "function isRegistered(uint8 id) view returns (bool)",
+  "function adapters(uint8 id) view returns (address)",
+  "function settlement() view returns (address)",
+  "function owner() view returns (address)",
+  "function pendingOwner() view returns (address)",
+  "function guardian() view returns (address)",
 ];
 
 export const PERMIT2_ABI = [

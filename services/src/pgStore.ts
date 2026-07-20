@@ -102,10 +102,11 @@ export class PgStore implements Store {
     await this.pool.query("UPDATE orders SET status = $2 WHERE order_hash = $1", [orderHash, status]);
   }
 
-  async insertFill(f: Fill): Promise<void> {
-    await this.pool.query(
+  async insertFill(f: Fill): Promise<boolean> {
+    const result = await this.pool.query(
       `INSERT INTO fills (order_hash, path, adapter_id, keeper, tx_hash, amount_out, maker_improvement, keeper_reward, block_number)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (order_hash, tx_hash, path) DO NOTHING`,
       [
         f.orderHash,
         f.path,
@@ -118,6 +119,7 @@ export class PgStore implements Store {
         f.blockNumber,
       ],
     );
+    return (result.rowCount ?? 0) > 0;
   }
 
   async listFills(orderHash?: string): Promise<Fill[]> {
@@ -150,5 +152,22 @@ export class PgStore implements Store {
        ON CONFLICT (maker) DO UPDATE SET epoch = EXCLUDED.epoch`,
       [maker.toLowerCase(), epoch.toString()],
     );
+  }
+
+  async getIndexerCheckpoint(key: string): Promise<number | undefined> {
+    const res = await this.pool.query("SELECT block_number FROM indexer_state WHERE name = $1", [key]);
+    return res.rows[0] ? Number(res.rows[0].block_number) : undefined;
+  }
+
+  async setIndexerCheckpoint(key: string, blockNumber: number): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO indexer_state (name, block_number, updated_at) VALUES ($1, $2, now())
+       ON CONFLICT (name) DO UPDATE SET block_number = EXCLUDED.block_number, updated_at = now()`,
+      [key, blockNumber],
+    );
+  }
+
+  async close(): Promise<void> {
+    await this.pool.end();
   }
 }
