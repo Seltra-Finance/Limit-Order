@@ -4,21 +4,35 @@ import { describe, expect, it, vi } from "vitest";
 import type { SeltraConfig } from "../src/config.js";
 import { MemoryStore } from "../src/store.js";
 import type { StoredOrder } from "../src/types.js";
+import type { BestVenueQuoter, DexQuote } from "../src/venues.js";
 import { PriceWatcher } from "../src/watcher.js";
 
 const config: SeltraConfig = {
-  rpcUrl: "",
+  rpcUrl: "http://localhost:8545/",
   chainId: 43113,
   permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
   settlement: "0x0000000000000000000000000000000000000001",
   router: "0x0000000000000000000000000000000000000002",
   pairs: {},
-  apiPort: 0,
+  apiPort: 8080,
+  apiHost: "127.0.0.1",
+  corsOrigin: "http://localhost:3000",
+  apiRateLimitPerMinute: 120,
+  dexVenues: [{ kind: "mock", name: "Mock", adapterId: 0 }],
   dexAdapterId: 0,
   keeperMinProfit: 0n,
+  minOrderNotional: 0n,
+  maxOrderTtlSeconds: 2_592_000,
   keeperMaxOrderNotional: 0n,
   keeperDailyNotionalCap: 0n,
+  wrappedNative: "0xd00ae08403B9bbb9124bB305C09058E32C39A48c",
+  gasCostBufferBps: 2000,
+  quoteDeadlineSeconds: 30,
+  maxQuoteAgeMs: 5000,
   pollIntervalMs: 60_000,
+  indexerStartBlock: 0,
+  indexerConfirmations: 0,
+  indexerBatchSize: 2000,
 };
 
 function storedOrder(expiry = BigInt(Math.floor(Date.now() / 1000) + 3600)): StoredOrder {
@@ -48,48 +62,45 @@ function storedOrder(expiry = BigInt(Math.floor(Date.now() / 1000) + 3600)): Sto
   };
 }
 
-function setup(enabled: boolean, quotedOut = 410n) {
+function setup(result: DexQuote | Error) {
   const store = new MemoryStore();
   const onFillable = vi.fn();
-  const watcher = new PriceWatcher(config, null as unknown as Provider, store, onFillable);
-  const quote = vi.fn().mockResolvedValue(quotedOut);
-  const router = {
-    isRegistered: vi.fn().mockResolvedValue(enabled),
-    quote: { staticCall: quote },
-  };
-  (watcher as unknown as { router: typeof router }).router = router;
-  return { store, watcher, onFillable, router, quote };
+  const quoteBest = result instanceof Error ? vi.fn().mockRejectedValue(result) : vi.fn().mockResolvedValue(result);
+  const quoter: BestVenueQuoter = { quoteBest };
+  const watcher = new PriceWatcher(config, null as unknown as Provider, store, onFillable, quoter);
+  return { store, watcher, onFillable, quoteBest };
 }
 
-describe("PriceWatcher adapter circuit breaker", () => {
-  it("does not quote or advertise a paused adapter", async () => {
-    const { store, watcher, onFillable, quote } = setup(false);
+describe("PriceWatcher executable venue quotes", () => {
+  const quote: DexQuote = {
+    adapterId: 2,
+    venue: "Blackhole",
+    amountOut: 410n,
+    extra: "0x1234",
+    quotedAtMs: Date.now(),
+  };
+
+  it("does not advertise an order when every venue is unavailable", async () => {
+    const { store, watcher, onFillable } = setup(new Error("no executable venue"));
     await store.insertOrder(storedOrder());
-
     await watcher.tick();
-
-    expect(quote).not.toHaveBeenCalled();
     expect(onFillable).not.toHaveBeenCalled();
   });
 
-  it("quotes a registered adapter and reports a fillable order", async () => {
-    const { store, watcher, onFillable, quote } = setup(true);
+  it("passes the complete winning route to the keeper callback", async () => {
+    const { store, watcher, onFillable, quoteBest } = setup(quote);
     const order = storedOrder();
     await store.insertOrder(order);
-
     await watcher.tick();
-
-    expect(quote).toHaveBeenCalledOnce();
-    expect(onFillable).toHaveBeenCalledWith(order, 410n);
+    expect(quoteBest).toHaveBeenCalledWith(order.order.makerAsset, order.order.takerAsset, 10n);
+    expect(onFillable).toHaveBeenCalledWith(order, quote);
   });
 
-  it("still expires orders while the adapter is paused", async () => {
-    const { store, watcher } = setup(false);
+  it("still expires orders when venues are unavailable", async () => {
+    const { store, watcher } = setup(new Error("paused"));
     const order = storedOrder(1n);
     await store.insertOrder(order);
-
     await watcher.tick();
-
     expect((await store.getOrder(order.orderHash))?.status).toBe("expired");
   });
 });

@@ -1,9 +1,9 @@
-import { Contract, type Provider } from "ethers";
+import type { Provider } from "ethers";
 
-import { ROUTER_ABI } from "./abi.js";
 import type { SeltraConfig } from "./config.js";
 import type { Store } from "./store.js";
 import type { StoredOrder } from "./types.js";
+import { VenueQuoteCoordinator, type BestVenueQuoter, type DexQuote } from "./venues.js";
 
 /**
  * Price watcher (revised spec 1.9): polls executable prices directly from the
@@ -13,16 +13,17 @@ import type { StoredOrder } from "./types.js";
  * when quoting its full makingAmount returns at least takingAmount.
  */
 export class PriceWatcher {
-  private router: Contract;
+  private readonly quoter: BestVenueQuoter;
   private timer?: NodeJS.Timeout;
 
   constructor(
     private readonly config: SeltraConfig,
     provider: Provider,
     private readonly store: Store,
-    private readonly onFillable: (order: StoredOrder, quotedOut: bigint) => void,
+    private readonly onFillable: (order: StoredOrder, quote: DexQuote) => void,
+    quoter?: BestVenueQuoter,
   ) {
-    this.router = new Contract(config.router, ROUTER_ABI, provider);
+    this.quoter = quoter ?? new VenueQuoteCoordinator(config, provider);
   }
 
   start(): void {
@@ -36,30 +37,20 @@ export class PriceWatcher {
   async tick(): Promise<void> {
     const resting = await this.store.listOrders({ status: "resting" });
     const now = BigInt(Math.floor(Date.now() / 1000));
-    let adapterEnabled = false;
-    try {
-      adapterEnabled = Boolean(await this.router.isRegistered(this.config.dexAdapterId));
-    } catch {
-      // Treat an unreadable registry as unavailable; never advertise a route
-      // whose circuit-breaker state cannot be established.
-    }
     for (const o of resting) {
       if (o.order.expiry <= now) {
         await this.store.setStatus(o.orderHash, "expired");
         continue;
       }
-      if (!adapterEnabled) continue;
       try {
-        const quoted: bigint = await this.router.quote.staticCall(
-          this.config.dexAdapterId,
+        const quote = await this.quoter.quoteBest(
           o.order.makerAsset,
           o.order.takerAsset,
           o.order.makingAmount,
-          "0x",
         );
-        if (quoted >= o.order.takingAmount) this.onFillable(o, quoted);
+        if (quote.amountOut >= o.order.takingAmount) this.onFillable(o, quote);
       } catch {
-        // no route/liquidity for this pair on the configured adapter; the
+        // No enabled route/liquidity for this pair; the
         // order can still settle P2P.
       }
     }

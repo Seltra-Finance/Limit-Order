@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Wallet } from "ethers";
 
-import { buildApi } from "../src/api.js";
+import { buildApi, softCancelMessage } from "../src/api.js";
 import type { SeltraConfig } from "../src/config.js";
 import { typedDataForSigning } from "../src/permit2.js";
 import { MemoryStore } from "../src/store.js";
@@ -18,11 +18,24 @@ const config: SeltraConfig = {
   router: "0x0000000000000000000000000000000000000001",
   pairs: { "WAVAX/USDC": { base: WAVAX, quote: USDC } },
   apiPort: 0,
+  apiHost: "127.0.0.1",
+  corsOrigin: "http://localhost:3000",
+  apiRateLimitPerMinute: 120,
+  dexVenues: [{ kind: "mock", name: "Mock", adapterId: 0 }],
   dexAdapterId: 0,
   keeperMinProfit: 0n,
+  minOrderNotional: 0n,
+  maxOrderTtlSeconds: 2_592_000,
   keeperMaxOrderNotional: 0n,
   keeperDailyNotionalCap: 0n,
+  wrappedNative: WAVAX,
+  gasCostBufferBps: 2000,
+  quoteDeadlineSeconds: 30,
+  maxQuoteAgeMs: 5000,
   pollIntervalMs: 60000,
+  indexerStartBlock: 0,
+  indexerConfirmations: 0,
+  indexerBatchSize: 2000,
 };
 
 const wallet = new Wallet("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
@@ -107,6 +120,18 @@ describe("orderbook API", () => {
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toMatch(/expired/);
 
+    const longLived = makeOrder({
+      expiry: BigInt(Math.floor(Date.now() / 1000) + config.maxOrderTtlSeconds + 60),
+    });
+    res = await api.inject({ method: "POST", url: "/orders", payload: await signedBody(longLived) });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/TTL/);
+
+    const zeroAmount = makeOrder({ makingAmount: 0n });
+    res = await api.inject({ method: "POST", url: "/orders", payload: await signedBody(zeroAmount) });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/positive/);
+
     const badPair = makeOrder({ takerAsset: "0x0000000000000000000000000000000000000123" });
     res = await api.inject({ method: "POST", url: "/orders", payload: await signedBody(badPair) });
     expect(res.statusCode).toBe(400);
@@ -124,9 +149,21 @@ describe("orderbook API", () => {
     const order = makeOrder();
     const res = await api.inject({ method: "POST", url: "/orders", payload: await signedBody(order) });
     const { orderHash } = res.json();
-    const del = await api.inject({ method: "DELETE", url: `/orders/${orderHash}` });
+    const cancelSignature = await wallet.signMessage(softCancelMessage(config.chainId, orderHash));
+    const del = await api.inject({
+      method: "DELETE",
+      url: `/orders/${orderHash}`,
+      headers: { "x-seltra-cancel-signature": cancelSignature },
+    });
     expect(del.statusCode).toBe(200);
     const get = await api.inject({ method: "GET", url: `/orders/${orderHash}` });
     expect(get.json().status).toBe("cancelled");
+  });
+
+  it("rejects an unauthenticated soft cancel", async () => {
+    const order = makeOrder();
+    const res = await api.inject({ method: "POST", url: "/orders", payload: await signedBody(order) });
+    const del = await api.inject({ method: "DELETE", url: `/orders/${res.json().orderHash}` });
+    expect(del.statusCode).toBe(401);
   });
 });

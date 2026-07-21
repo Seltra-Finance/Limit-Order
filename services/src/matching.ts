@@ -69,13 +69,15 @@ export class MatchingEngine {
 
   /** On on-chain failure (nonce consumed, epoch bumped, race lost), release
    *  both sides and re-evaluate what remains (spec 1.8). */
-  releaseMatch(m: Match, aStillResting: boolean, bStillResting: boolean): void {
+  releaseMatch(m: Match, aStillResting: boolean, bStillResting: boolean, reevaluate = true): void {
     this.inFlight.delete(m.a.orderHash);
     this.inFlight.delete(m.b.orderHash);
     if (!aStillResting) this.resting.delete(m.a.orderHash);
     if (!bStillResting) this.resting.delete(m.b.orderHash);
-    if (aStillResting) this.evaluate(m.a);
-    else if (bStillResting) this.evaluate(m.b);
+    if (reevaluate) {
+      if (aStillResting) this.evaluate(m.a);
+      else if (bStillResting) this.evaluate(m.b);
+    }
   }
 
   settleMatch(m: Match): void {

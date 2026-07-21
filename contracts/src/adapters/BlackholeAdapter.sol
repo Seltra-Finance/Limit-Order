@@ -10,8 +10,8 @@ import {IBlackholeRouterV2} from "../interfaces/external/IBlackholeRouterV2.sol"
 import {IBlackholeRouterHelper} from "../interfaces/external/IBlackholeRouterHelper.sol";
 
 /// @title BlackholeAdapter
-/// @notice V1.5 adapter, written and fork-testable now but NOT registered in
-///         V1 (revised spec 6.2). Blackhole is a ThenaFi fork with Algebra
+/// @notice Direct-route Blackhole adapter for independently validated pools.
+///         Blackhole is a ThenaFi fork with Algebra
 ///         Integral CL; its RouterV2 route struct is
 ///         {pair, from, to, stable, concentrated, receiver}.
 ///

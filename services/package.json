@@ -10,6 +10,8 @@
     "dev": "tsx src/index.ts",
     "api": "tsx src/api.ts",
     "keeper": "tsx src/keeper.ts",
+    "arb": "tsx src/arbBot.ts",
+    "arb:dry-run": "tsx src/arbBot.ts --once",
     "test": "vitest run"
   },
   "dependencies": {

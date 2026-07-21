@@ -21,7 +21,7 @@ contract LFJAdapterForkTest is Test {
     address constant WAVAX = 0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7;
     address constant USDC = 0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E;
     ILBRouter constant LB_ROUTER = ILBRouter(0xb4315e873dBcf96Ffd0acd8EA43f689D8c20fB30);
-    ILBQuoter constant LB_QUOTER = ILBQuoter(0x64b57F4249aA99a812212cee7DAEFEDC40B203cD);
+    ILBQuoter constant LB_QUOTER = ILBQuoter(0xd76019A16606FDa4651f636D9751f500Ed776250);
     ISignatureTransfer constant PERMIT2 = ISignatureTransfer(0x000000000022D473030F116dDEE9F6B43aC78BA3);
     uint8 constant LFJ_ADAPTER_ID = 1;
 

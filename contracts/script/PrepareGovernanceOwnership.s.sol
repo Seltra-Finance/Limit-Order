@@ -12,42 +12,79 @@ contract PrepareGovernanceOwnership is Script {
     bytes32 constant NO_PREDECESSOR = bytes32(0);
     bytes32 constant SETTLEMENT_ACCEPT_SALT = keccak256("seltra.accept.settlement.v1");
     bytes32 constant ROUTER_ACCEPT_SALT = keccak256("seltra.accept.router.v1");
+    bytes32 constant BLACKHOLE_ACCEPT_SALT = keccak256("seltra.accept.blackhole.v1");
 
     function run() external {
         TimelockController timelock = TimelockController(payable(vm.envAddress("TIMELOCK")));
         address settlement = vm.envAddress("SETTLEMENT");
         address router = vm.envAddress("ROUTER");
+        address blackhole = vm.envOr("BLACKHOLE_ADAPTER", address(0));
         address proposer = vm.envAddress("PROPOSER");
         address executor = vm.envOr("EXECUTOR", proposer);
         uint256 minDelay = timelock.getMinDelay();
+        _writeManifest(timelock, proposer, executor, settlement, router, blackhole, minDelay);
+        console.log("Prepared ownership calldata for existing timelock:", address(timelock));
+    }
+
+    function _writeManifest(
+        TimelockController timelock,
+        address proposer,
+        address executor,
+        address settlement,
+        address router,
+        address blackhole,
+        uint256 minDelay
+    ) internal {
         bytes memory acceptCall = abi.encodeCall(Ownable2Step.acceptOwnership, ());
-
-        bytes memory scheduleSettlement = abi.encodeCall(
-            TimelockController.schedule, (settlement, 0, acceptCall, NO_PREDECESSOR, SETTLEMENT_ACCEPT_SALT, minDelay)
-        );
-        bytes memory scheduleRouter = abi.encodeCall(
-            TimelockController.schedule, (router, 0, acceptCall, NO_PREDECESSOR, ROUTER_ACCEPT_SALT, minDelay)
-        );
-        bytes memory executeSettlement = abi.encodeCall(
-            TimelockController.execute, (settlement, 0, acceptCall, NO_PREDECESSOR, SETTLEMENT_ACCEPT_SALT)
-        );
-        bytes memory executeRouter =
-            abi.encodeCall(TimelockController.execute, (router, 0, acceptCall, NO_PREDECESSOR, ROUTER_ACCEPT_SALT));
-
         string memory json = "seltra-governance";
         vm.serializeAddress(json, "timelock", address(timelock));
         vm.serializeAddress(json, "proposer", proposer);
         vm.serializeAddress(json, "executor", executor);
         vm.serializeAddress(json, "settlement", settlement);
         vm.serializeAddress(json, "router", router);
+        vm.serializeAddress(json, "blackholeAdapter", blackhole);
         vm.serializeUint(json, "minDelay", minDelay);
         vm.serializeBytes(json, "acceptOwnershipCalldata", acceptCall);
-        vm.serializeBytes(json, "scheduleSettlementCalldata", scheduleSettlement);
-        vm.serializeBytes(json, "scheduleRouterCalldata", scheduleRouter);
-        vm.serializeBytes(json, "executeSettlementCalldata", executeSettlement);
-        string memory out = vm.serializeBytes(json, "executeRouterCalldata", executeRouter);
+        vm.serializeBytes(
+            json,
+            "scheduleSettlementCalldata",
+            _scheduleOwnership(settlement, SETTLEMENT_ACCEPT_SALT, acceptCall, minDelay)
+        );
+        vm.serializeBytes(
+            json, "scheduleRouterCalldata", _scheduleOwnership(router, ROUTER_ACCEPT_SALT, acceptCall, minDelay)
+        );
+        vm.serializeBytes(
+            json,
+            "scheduleBlackholeCalldata",
+            blackhole == address(0)
+                ? bytes("")
+                : _scheduleOwnership(blackhole, BLACKHOLE_ACCEPT_SALT, acceptCall, minDelay)
+        );
+        vm.serializeBytes(
+            json, "executeSettlementCalldata", _executeOwnership(settlement, SETTLEMENT_ACCEPT_SALT, acceptCall)
+        );
+        vm.serializeBytes(json, "executeRouterCalldata", _executeOwnership(router, ROUTER_ACCEPT_SALT, acceptCall));
+        string memory out = vm.serializeBytes(
+            json,
+            "executeBlackholeCalldata",
+            blackhole == address(0) ? bytes("") : _executeOwnership(blackhole, BLACKHOLE_ACCEPT_SALT, acceptCall)
+        );
         vm.writeJson(out, "./governance-ownership.json");
+    }
 
-        console.log("Prepared ownership calldata for existing timelock:", address(timelock));
+    function _scheduleOwnership(address target, bytes32 salt, bytes memory acceptCall, uint256 minDelay)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodeCall(TimelockController.schedule, (target, 0, acceptCall, NO_PREDECESSOR, salt, minDelay));
+    }
+
+    function _executeOwnership(address target, bytes32 salt, bytes memory acceptCall)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodeCall(TimelockController.execute, (target, 0, acceptCall, NO_PREDECESSOR, salt));
     }
 }

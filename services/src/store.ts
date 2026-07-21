@@ -7,16 +7,21 @@ export interface Store {
   getOrder(orderHash: string): Promise<StoredOrder | undefined>;
   listOrders(filter?: { maker?: string; pair?: [string, string]; status?: OrderStatus }): Promise<StoredOrder[]>;
   setStatus(orderHash: string, status: OrderStatus): Promise<void>;
-  insertFill(fill: Fill): Promise<void>;
+  /** Returns true only when a new event-backed fill was inserted. */
+  insertFill(fill: Fill): Promise<boolean>;
   listFills(orderHash?: string): Promise<Fill[]>;
   getEpoch(maker: string): Promise<bigint>;
   setEpoch(maker: string, epoch: bigint): Promise<void>;
+  getIndexerCheckpoint(key: string): Promise<number | undefined>;
+  setIndexerCheckpoint(key: string, blockNumber: number): Promise<void>;
+  close?(): Promise<void>;
 }
 
 export class MemoryStore implements Store {
   private orders = new Map<string, StoredOrder>();
   private fills: Fill[] = [];
   private epochs = new Map<string, bigint>();
+  private checkpoints = new Map<string, number>();
 
   async insertOrder(order: StoredOrder): Promise<void> {
     if (this.orders.has(order.orderHash)) throw new Error("duplicate order");
@@ -51,8 +56,16 @@ export class MemoryStore implements Store {
     if (o) o.status = status;
   }
 
-  async insertFill(fill: Fill): Promise<void> {
+  async insertFill(fill: Fill): Promise<boolean> {
+    const duplicate = this.fills.some(
+      (existing) =>
+        existing.orderHash.toLowerCase() === fill.orderHash.toLowerCase()
+        && existing.txHash.toLowerCase() === fill.txHash.toLowerCase()
+        && existing.path === fill.path,
+    );
+    if (duplicate) return false;
     this.fills.push(fill);
+    return true;
   }
 
   async listFills(orderHash?: string): Promise<Fill[]> {
@@ -66,4 +79,14 @@ export class MemoryStore implements Store {
   async setEpoch(maker: string, epoch: bigint): Promise<void> {
     this.epochs.set(maker.toLowerCase(), epoch);
   }
+
+  async getIndexerCheckpoint(key: string): Promise<number | undefined> {
+    return this.checkpoints.get(key);
+  }
+
+  async setIndexerCheckpoint(key: string, blockNumber: number): Promise<void> {
+    this.checkpoints.set(key, blockNumber);
+  }
+
+  async close(): Promise<void> {}
 }

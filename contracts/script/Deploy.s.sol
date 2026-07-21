@@ -8,12 +8,29 @@ import {SeltraSettlement} from "../src/SeltraSettlement.sol";
 import {SeltraAggregationRouter} from "../src/SeltraAggregationRouter.sol";
 import {MockDEXAdapter} from "../src/adapters/MockDEXAdapter.sol";
 import {LFJLBAdapter} from "../src/adapters/LFJLBAdapter.sol";
+import {BlackholeAdapter} from "../src/adapters/BlackholeAdapter.sol";
 import {PharaohAdapter} from "../src/adapters/PharaohAdapter.sol";
 import {ISeltraAggregationRouter} from "../src/interfaces/ISeltraAggregationRouter.sol";
 import {ILBRouter} from "../src/interfaces/external/ILBRouter.sol";
 import {ILBQuoter} from "../src/interfaces/external/ILBQuoter.sol";
 import {IPharaohSwapRouter} from "../src/interfaces/external/IPharaohSwapRouter.sol";
 import {IPharaohQuoterV2} from "../src/interfaces/external/IPharaohQuoterV2.sol";
+import {IBlackholeRouterV2} from "../src/interfaces/external/IBlackholeRouterV2.sol";
+import {IBlackholeRouterHelper} from "../src/interfaces/external/IBlackholeRouterHelper.sol";
+
+interface ITokenPairPool {
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+}
+
+interface IMainnetTimelock {
+    function getMinDelay() external view returns (uint256);
+}
+
+interface IMainnetSafe {
+    function getOwners() external view returns (address[] memory);
+    function getThreshold() external view returns (uint256);
+}
 
 /// @notice Revised spec 1.11: one command deploys the full stack and writes
 ///         addresses.json. Fuji:
@@ -29,6 +46,9 @@ import {IPharaohQuoterV2} from "../src/interfaces/external/IPharaohQuoterV2.sol"
 ///   LFJ_LB_QUOTER          LBQuoter address (default: verified mainnet v2.1
 ///                          quoter; override on Fuji)
 ///   DEPLOY_MOCK_ADAPTER    default true; NEVER set on mainnet (spec 2.1)
+///   DEPLOY_BLACKHOLE_ADAPTER default true on mainnet, false elsewhere
+///   BLACKHOLE_ROUTER/HELPER and the two BLACKHOLE_*_POOL values default to
+///                          the independently fork-validated mainnet contracts
 ///   PHARAOH_SWAP_ROUTER    immutable CL SwapRouter; zero skips adapter 3
 ///   PHARAOH_QUOTER_V2      CL QuoterV2; zero skips adapter 3
 ///   ALLOWED_TOKENS         comma-free: pass via ALLOWED_TOKEN_0..N below
@@ -37,107 +57,273 @@ contract Deploy is Script {
     address constant CANONICAL_PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
     uint8 constant MOCK_ADAPTER_ID = 0;
     uint8 constant LFJ_ADAPTER_ID = 1;
+    uint8 constant BLACKHOLE_ADAPTER_ID = 2;
     uint8 constant PHARAOH_ADAPTER_ID = 3;
 
+    address constant WAVAX = 0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7;
+    address constant USDC = 0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E;
+    address constant USDT = 0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7;
+    address constant BLACKHOLE_ROUTER = 0xe946A9f39312E2346BA79DAb865B0e9A74f2F981;
+    address constant BLACKHOLE_HELPER = 0x53D569BC4B37ADbBDB6ab447D92ADf42514AE480;
+    address constant BLACKHOLE_WAVAX_USDC_POOL = 0x41100C6D2c6920B10d12Cd8D59c8A9AA2eF56fC7;
+    address constant BLACKHOLE_USDC_USDT_POOL = 0x859592A4A469610E573f96Ef87A0e5565F9a94c8;
+
+    struct DeploymentConfig {
+        uint256 privateKey;
+        address deployer;
+        address owner;
+        address guardian;
+        address treasury;
+        uint256 makerSurplusBps;
+        uint256 protocolFeeBps;
+        bool mainnet;
+        bool deployMock;
+        bool deployBlackhole;
+    }
+
+    struct UpstreamConfig {
+        address lbRouter;
+        address lbQuoter;
+        address pharaohRouter;
+        address pharaohQuoter;
+        address bhRouter;
+        address bhHelper;
+        address bhWavaxUsdcPool;
+        address bhUsdcUsdtPool;
+    }
+
+    struct AdapterDeployments {
+        address mock;
+        address lfj;
+        address blackhole;
+        address pharaoh;
+    }
+
     function run() external {
-        uint256 pk = vm.envUint("PRIVATE_KEY");
-        address deployer = vm.addr(pk);
-        address owner = vm.envOr("OWNER", deployer);
-        address guardian = vm.envOr("GUARDIAN", deployer);
-        bool deployMock = vm.envOr("DEPLOY_MOCK_ADAPTER", true);
-        if (block.chainid == 43_114) require(!deployMock, "mock adapter forbidden on Avalanche mainnet");
-        address lbRouter = vm.envOr("LFJ_LB_ROUTER", 0xb4315e873dBcf96Ffd0acd8EA43f689D8c20fB30);
-        address lbQuoter = vm.envOr("LFJ_LB_QUOTER", 0x64b57F4249aA99a812212cee7DAEFEDC40B203cD);
-        address pharaohRouter = vm.envOr("PHARAOH_SWAP_ROUTER", 0xc8B8fCbDb5C019D7802fFb0b39603395D7d3915c);
-        address pharaohQuoter = vm.envOr("PHARAOH_QUOTER_V2", 0xB7297301b7CC659BB96D51754643A0Df6eEA2138);
+        DeploymentConfig memory config = _loadDeploymentConfig();
+        UpstreamConfig memory upstream = _loadUpstreamConfig();
+        _validateMainnetConfig(config, upstream);
 
-        vm.startBroadcast(pk);
+        vm.startBroadcast(config.privateKey);
+        address permit2 = _resolvePermit2();
+        SeltraAggregationRouter router = new SeltraAggregationRouter(config.deployer, config.guardian);
+        SeltraSettlement settlement = new SeltraSettlement(
+            ISignatureTransfer(permit2), ISeltraAggregationRouter(address(router)), config.deployer, config.guardian
+        );
+        router.setSettlement(address(settlement));
+        AdapterDeployments memory adapters = _deployAdapters(router, config, upstream);
+        _configureSettlement(settlement, config);
+        if (config.owner != config.deployer) {
+            settlement.transferOwnership(config.owner);
+            router.transferOwnership(config.owner);
+        }
+        vm.stopBroadcast();
 
-        // 1. Resolve the canonical Permit2; deploy from the vendored bytecode
-        //    only if this chain lacks it (spec 1.1).
-        address permit2 = CANONICAL_PERMIT2;
+        _writeManifest(config, upstream, permit2, settlement, router, adapters);
+        console.log("Wrote addresses.json");
+        console.log("Settlement:", address(settlement));
+        console.log("Router:", address(router));
+    }
+
+    function _loadDeploymentConfig() internal view returns (DeploymentConfig memory config) {
+        config.privateKey = vm.envUint("PRIVATE_KEY");
+        config.deployer = vm.addr(config.privateKey);
+        config.owner = vm.envOr("OWNER", config.deployer);
+        config.guardian = vm.envOr("GUARDIAN", config.deployer);
+        config.treasury = vm.envOr("TREASURY", address(0));
+        config.makerSurplusBps = vm.envOr("MAKER_SURPLUS_BPS", uint256(7_000));
+        config.protocolFeeBps = vm.envOr("PROTOCOL_FEE_BPS", uint256(0));
+        config.mainnet = block.chainid == 43_114;
+        config.deployMock = vm.envOr("DEPLOY_MOCK_ADAPTER", true);
+        config.deployBlackhole = vm.envOr("DEPLOY_BLACKHOLE_ADAPTER", config.mainnet);
+        require(config.makerSurplusBps <= 10_000 && config.protocolFeeBps <= 1_000, "invalid fee bps");
+        require(config.protocolFeeBps == 0 || config.treasury != address(0), "fee requires treasury");
+    }
+
+    function _loadUpstreamConfig() internal view returns (UpstreamConfig memory upstream) {
+        upstream.lbRouter = vm.envOr("LFJ_LB_ROUTER", 0xb4315e873dBcf96Ffd0acd8EA43f689D8c20fB30);
+        upstream.lbQuoter = vm.envOr("LFJ_LB_QUOTER", 0xd76019A16606FDa4651f636D9751f500Ed776250);
+        upstream.pharaohRouter = vm.envOr("PHARAOH_SWAP_ROUTER", 0xc8B8fCbDb5C019D7802fFb0b39603395D7d3915c);
+        upstream.pharaohQuoter = vm.envOr("PHARAOH_QUOTER_V2", 0xB7297301b7CC659BB96D51754643A0Df6eEA2138);
+        upstream.bhRouter = vm.envOr("BLACKHOLE_ROUTER", BLACKHOLE_ROUTER);
+        upstream.bhHelper = vm.envOr("BLACKHOLE_HELPER", BLACKHOLE_HELPER);
+        upstream.bhWavaxUsdcPool = vm.envOr("BLACKHOLE_WAVAX_USDC_POOL", BLACKHOLE_WAVAX_USDC_POOL);
+        upstream.bhUsdcUsdtPool = vm.envOr("BLACKHOLE_USDC_USDT_POOL", BLACKHOLE_USDC_USDT_POOL);
+    }
+
+    function _validateMainnetConfig(DeploymentConfig memory config, UpstreamConfig memory upstream) internal view {
+        if (!config.mainnet) return;
+        require(!config.deployMock, "mock adapter forbidden on Avalanche mainnet");
+        require(config.deployBlackhole, "Blackhole adapter required on mainnet");
+        require(
+            config.owner != config.deployer && config.owner.code.length > 0, "mainnet OWNER must be a deployed timelock"
+        );
+        require(
+            config.guardian != config.deployer && config.guardian.code.length > 0,
+            "mainnet GUARDIAN must be a deployed multisig"
+        );
+        require(IMainnetTimelock(config.owner).getMinDelay() >= 48 hours, "mainnet timelock delay below 48h");
+        address[] memory safeOwners = IMainnetSafe(config.guardian).getOwners();
+        uint256 safeThreshold = IMainnetSafe(config.guardian).getThreshold();
+        require(safeThreshold >= 2 && safeOwners.length >= safeThreshold, "mainnet guardian Safe threshold too low");
+        require(CANONICAL_PERMIT2.code.length > 0, "canonical Permit2 missing on mainnet");
+        require(vm.envExists("MAKER_SURPLUS_BPS"), "mainnet MAKER_SURPLUS_BPS must be explicit");
+        require(vm.envExists("PROTOCOL_FEE_BPS"), "mainnet PROTOCOL_FEE_BPS must be explicit");
+        require(vm.envExists("TREASURY"), "mainnet TREASURY must be explicit");
+        require(
+            upstream.bhRouter == BLACKHOLE_ROUTER && upstream.bhHelper == BLACKHOLE_HELPER,
+            "unvalidated Blackhole endpoint"
+        );
+        require(
+            upstream.bhWavaxUsdcPool == BLACKHOLE_WAVAX_USDC_POOL
+                && upstream.bhUsdcUsdtPool == BLACKHOLE_USDC_USDT_POOL,
+            "unvalidated Blackhole pool"
+        );
+    }
+
+    function _resolvePermit2() internal returns (address permit2) {
+        permit2 = CANONICAL_PERMIT2;
         if (permit2.code.length == 0) {
             bytes memory creationCode = vm.getCode("Permit2.sol:Permit2");
-            assembly {
+            assembly ("memory-safe") {
                 permit2 := create(0, add(creationCode, 0x20), mload(creationCode))
             }
             require(permit2 != address(0), "Permit2 deploy failed");
             console.log("Canonical Permit2 absent; deployed local Permit2 at", permit2);
         }
+    }
 
-        // 2. Router first (the settlement takes it as an immutable), deployer
-        //    as interim owner for wiring.
-        SeltraAggregationRouter router = new SeltraAggregationRouter(deployer, guardian);
-
-        // 3. Settlement.
-        SeltraSettlement settlement = new SeltraSettlement(
-            ISignatureTransfer(permit2), ISeltraAggregationRouter(address(router)), deployer, guardian
-        );
-        router.setSettlement(address(settlement));
-
-        // 4. Adapters. The mock is a Fuji-only convenience and must never be
-        //    registered on mainnet (spec 2.1).
-        address mock;
-        if (deployMock) {
-            mock = address(new MockDEXAdapter(address(router), owner));
-            router.addAdapter(MOCK_ADAPTER_ID, mock);
+    function _deployAdapters(
+        SeltraAggregationRouter router,
+        DeploymentConfig memory config,
+        UpstreamConfig memory upstream
+    ) internal returns (AdapterDeployments memory deployed) {
+        if (config.deployMock) {
+            deployed.mock = address(new MockDEXAdapter(address(router), config.owner));
+            router.addAdapter(MOCK_ADAPTER_ID, deployed.mock);
         }
-        address lfj;
-        if (lbRouter != address(0) && lbQuoter != address(0) && lbRouter.code.length > 0 && lbQuoter.code.length > 0) {
-            lfj = address(new LFJLBAdapter(address(router), ILBRouter(lbRouter), ILBQuoter(lbQuoter)));
-            router.addAdapter(LFJ_ADAPTER_ID, lfj);
+        if (
+            upstream.lbRouter != address(0) && upstream.lbQuoter != address(0) && upstream.lbRouter.code.length > 0
+                && upstream.lbQuoter.code.length > 0
+        ) {
+            deployed.lfj = address(
+                new LFJLBAdapter(address(router), ILBRouter(upstream.lbRouter), ILBQuoter(upstream.lbQuoter))
+            );
+            router.addAdapter(LFJ_ADAPTER_ID, deployed.lfj);
         } else {
             console.log("LFJ router/quoter unavailable; skipping adapter 1");
         }
-        address blackhole;
-        // Adapter id 2 is intentionally left unregistered. Its allowlist now
-        // binds the full route tuple, but Blackhole RouterV2 derives standard
-        // pools upstream; registration waits for independent validation that
-        // each supported route key resolves to the intended executable pool.
-        console.log("Blackhole adapter disabled pending executable pool binding");
-        address pharaoh;
+        if (config.deployBlackhole) deployed.blackhole = _deployBlackhole(router, config, upstream);
         if (
-            pharaohRouter != address(0) && pharaohQuoter != address(0) && pharaohRouter.code.length > 0
-                && pharaohQuoter.code.length > 0
+            upstream.pharaohRouter != address(0) && upstream.pharaohQuoter != address(0)
+                && upstream.pharaohRouter.code.length > 0 && upstream.pharaohQuoter.code.length > 0
         ) {
-            pharaoh = address(
-                new PharaohAdapter(address(router), IPharaohSwapRouter(pharaohRouter), IPharaohQuoterV2(pharaohQuoter))
+            deployed.pharaoh = address(
+                new PharaohAdapter(
+                    address(router),
+                    IPharaohSwapRouter(upstream.pharaohRouter),
+                    IPharaohQuoterV2(upstream.pharaohQuoter)
+                )
             );
-            router.addAdapter(PHARAOH_ADAPTER_ID, pharaoh);
+            router.addAdapter(PHARAOH_ADAPTER_ID, deployed.pharaoh);
         } else {
             console.log("Pharaoh router/quoter unavailable; skipping adapter 3");
         }
+        if (config.mainnet) {
+            require(
+                deployed.lfj != address(0) && deployed.blackhole != address(0) && deployed.pharaoh != address(0),
+                "venue missing"
+            );
+        }
+    }
 
-        // 5. Token allowlist (spec 1.5).
+    function _deployBlackhole(
+        SeltraAggregationRouter router,
+        DeploymentConfig memory config,
+        UpstreamConfig memory upstream
+    ) internal returns (address deployed) {
+        require(upstream.bhRouter.code.length > 0 && upstream.bhHelper.code.length > 0, "Blackhole unavailable");
+        _validatePool(upstream.bhWavaxUsdcPool, WAVAX, USDC);
+        _validatePool(upstream.bhUsdcUsdtPool, USDC, USDT);
+        BlackholeAdapter adapter = new BlackholeAdapter(
+            address(router),
+            IBlackholeRouterV2(upstream.bhRouter),
+            IBlackholeRouterHelper(upstream.bhHelper),
+            config.deployer
+        );
+        adapter.setRouteAllowed(upstream.bhWavaxUsdcPool, WAVAX, USDC, false, true, true);
+        adapter.setRouteAllowed(upstream.bhWavaxUsdcPool, USDC, WAVAX, false, true, true);
+        adapter.setRouteAllowed(upstream.bhUsdcUsdtPool, USDC, USDT, false, true, true);
+        adapter.setRouteAllowed(upstream.bhUsdcUsdtPool, USDT, USDC, false, true, true);
+        if (config.owner != config.deployer) adapter.transferOwnership(config.owner);
+        deployed = address(adapter);
+        router.addAdapter(BLACKHOLE_ADAPTER_ID, deployed);
+    }
+
+    function _configureSettlement(SeltraSettlement settlement, DeploymentConfig memory config) internal {
+        bool hasWavax;
+        bool hasUsdc;
+        bool hasUsdt;
         for (uint256 i = 0; i < 10; i++) {
             address token = vm.envOr(string.concat("ALLOWED_TOKEN_", vm.toString(i)), address(0));
-            if (token != address(0)) settlement.setTokenAllowed(token, true);
+            if (token == address(0)) continue;
+            if (config.mainnet) {
+                require(token == WAVAX || token == USDC || token == USDT, "token outside launch registry");
+            }
+            settlement.setTokenAllowed(token, true);
+            if (token == WAVAX) hasWavax = true;
+            if (token == USDC) hasUsdc = true;
+            if (token == USDT) hasUsdt = true;
         }
+        if (config.mainnet) require(hasWavax && hasUsdc && hasUsdt, "mainnet launch tokens missing");
+        settlement.setSurplusParams(uint16(config.makerSurplusBps), uint16(config.protocolFeeBps), config.treasury);
+    }
 
-        // 6. Hand ownership to the final owner (Ownable2Step: OWNER must call
-        //    acceptOwnership from the multisig).
-        if (owner != deployer) {
-            settlement.transferOwnership(owner);
-            router.transferOwnership(owner);
-        }
-
-        vm.stopBroadcast();
-
-        // 7. addresses.json
+    function _writeManifest(
+        DeploymentConfig memory config,
+        UpstreamConfig memory upstream,
+        address permit2,
+        SeltraSettlement settlement,
+        SeltraAggregationRouter router,
+        AdapterDeployments memory adapters
+    ) internal {
         string memory json = "seltra";
         vm.serializeUint(json, "chainId", block.chainid);
         vm.serializeAddress(json, "permit2", permit2);
         vm.serializeAddress(json, "settlement", address(settlement));
         vm.serializeAddress(json, "router", address(router));
-        vm.serializeAddress(json, "mockAdapter", mock);
-        vm.serializeAddress(json, "lfjAdapter", lfj);
-        vm.serializeAddress(json, "blackholeAdapter", blackhole);
-        vm.serializeAddress(json, "pharaohAdapter", pharaoh);
-        vm.serializeAddress(json, "owner", owner);
-        string memory out = vm.serializeAddress(json, "guardian", guardian);
+        vm.serializeAddress(json, "mockAdapter", adapters.mock);
+        vm.serializeAddress(json, "lfjAdapter", adapters.lfj);
+        vm.serializeAddress(json, "lfjRouter", upstream.lbRouter);
+        vm.serializeAddress(json, "lfjQuoter", upstream.lbQuoter);
+        vm.serializeAddress(json, "blackholeAdapter", adapters.blackhole);
+        vm.serializeAddress(json, "blackholeRouter", upstream.bhRouter);
+        vm.serializeAddress(json, "blackholeHelper", upstream.bhHelper);
+        vm.serializeAddress(json, "blackholeWavaxUsdcPool", upstream.bhWavaxUsdcPool);
+        vm.serializeAddress(json, "blackholeUsdcUsdtPool", upstream.bhUsdcUsdtPool);
+        vm.serializeAddress(json, "pharaohAdapter", adapters.pharaoh);
+        vm.serializeAddress(json, "pharaohRouter", upstream.pharaohRouter);
+        vm.serializeAddress(json, "pharaohQuoter", upstream.pharaohQuoter);
+        vm.serializeAddress(json, "wavax", WAVAX);
+        vm.serializeAddress(json, "usdc", USDC);
+        vm.serializeAddress(json, "usdt", USDT);
+        vm.serializeUint(json, "makerSurplusBps", config.makerSurplusBps);
+        vm.serializeUint(json, "protocolFeeBps", config.protocolFeeBps);
+        vm.serializeAddress(json, "treasury", config.treasury);
+        vm.serializeAddress(json, "owner", config.owner);
+        vm.serializeAddress(json, "deployer", config.deployer);
+        vm.serializeUint(json, "deploymentBlock", block.number);
+        string memory out = vm.serializeAddress(json, "guardian", config.guardian);
         vm.writeJson(out, "./addresses.json");
-        console.log("Wrote addresses.json");
-        console.log("Settlement:", address(settlement));
-        console.log("Router:", address(router));
+    }
+
+    function _validatePool(address pool, address tokenA, address tokenB) internal view {
+        require(pool.code.length > 0, "Blackhole pool has no code");
+        address token0 = ITokenPairPool(pool).token0();
+        address token1 = ITokenPairPool(pool).token1();
+        require(
+            (token0 == tokenA && token1 == tokenB) || (token0 == tokenB && token1 == tokenA),
+            "Blackhole pool token mismatch"
+        );
     }
 }
