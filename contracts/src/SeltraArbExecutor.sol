@@ -63,6 +63,7 @@ contract SeltraArbExecutor is Ownable2Step, ReentrancyGuard {
     event GuardianSet(address guardian);
     event OperatorSet(address operator);
     event TokenAllowed(address indexed token, bool allowed);
+    event TokenSwept(address indexed token, address indexed to, uint256 amount);
     event TreasurySet(address treasury);
 
     mapping(uint8 => address) public adapters;
@@ -205,10 +206,15 @@ contract SeltraArbExecutor is Ownable2Step, ReentrancyGuard {
         );
     }
 
-    /// @notice Treasury recovery is owner-only (timelock/Safe in production).
+    /// @notice Treasury recovery is owner-only (timelock in production).
+    /// @dev Recovery deliberately does not enforce an exact recipient delta:
+    ///      unusual tokens sent here accidentally must remain recoverable.
+    ///      Execution and profit payouts retain exact-transfer enforcement.
     function sweep(address token, address to, uint256 amount) external onlyOwner {
+        if (token == address(0)) revert ZeroAddress();
         if (to == address(0)) revert ZeroAddress();
-        _safeTransferExact(IERC20(token), to, amount);
+        IERC20(token).safeTransfer(to, amount);
+        emit TokenSwept(token, to, amount);
     }
 
     function _activeAdapter(uint8 id) internal view returns (address adapter) {

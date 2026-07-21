@@ -39,7 +39,7 @@ contract MockPharaohSwapRouter is IPharaohSwapRouter {
         lastDeadline = params.deadline;
         require(block.timestamp <= params.deadline, "expired");
         require(amountOut >= params.amountOutMinimum, "Too little received");
-        IERC20(params.tokenIn).transferFrom(msg.sender, address(this), params.amountIn);
+        require(IERC20(params.tokenIn).transferFrom(msg.sender, address(this), params.amountIn), "transfer failed");
         TestERC20(params.tokenOut).mint(params.recipient, amountOut);
         return amountOut;
     }

@@ -24,6 +24,7 @@ contract LFJLBAdapter is IDEXAdapter {
     error OnlyRouter();
     error BadPath();
     error AmountTooLarge();
+    error DeadlineExpired(uint256 deadline);
     error ZeroAddress();
 
     address public immutable ROUTER; // Seltra aggregation router
@@ -83,7 +84,7 @@ contract LFJLBAdapter is IDEXAdapter {
 
     function _decode(address tokenIn, address tokenOut, bytes calldata extra)
         internal
-        pure
+        view
         returns (uint256 deadline, ILBRouter.Path memory path)
     {
         uint256[] memory pairBinSteps;
@@ -91,6 +92,7 @@ contract LFJLBAdapter is IDEXAdapter {
         IERC20[] memory tokenPath;
         (deadline, pairBinSteps, versions, tokenPath) =
             abi.decode(extra, (uint256, uint256[], ILBRouter.Version[], IERC20[]));
+        if (deadline < block.timestamp) revert DeadlineExpired(deadline);
         // Pin the decoded path to the order-derived endpoints.
         if (
             tokenPath.length != 2 || address(tokenPath[0]) != tokenIn || address(tokenPath[1]) != tokenOut

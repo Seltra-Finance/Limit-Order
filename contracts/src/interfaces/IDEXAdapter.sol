@@ -4,7 +4,8 @@ pragma solidity 0.8.24;
 /// @notice Minimal adapter interface per spec 5.3. The aggregation router
 ///         transfers `amountIn` of `tokenIn` to the adapter before calling
 ///         `swap`; the adapter must deliver the output to `msg.sender` (the
-///         router) and return the realized amount.
+///         router). The return value is retained for adapter interoperability,
+///         but callers independently measure their own output balance delta.
 interface IDEXAdapter {
     /// @param extra Opaque, adapter-specific route encoding: deadline, bin
     ///        step and version for LFJ; route structs for Blackhole; deadline

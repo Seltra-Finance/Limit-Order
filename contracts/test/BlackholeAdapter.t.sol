@@ -26,7 +26,7 @@ contract MockBlackholeRouter is IBlackholeRouterV2 {
     ) external returns (uint256[] memory amounts) {
         require(block.timestamp <= deadline, "expired");
         require(amountOut >= amountOutMin, "IOA");
-        IERC20(routes[0].from).transferFrom(msg.sender, address(this), amountIn);
+        require(IERC20(routes[0].from).transferFrom(msg.sender, address(this), amountIn), "transfer failed");
         TestERC20(routes[0].to).mint(routes[0].receiver, amountOut);
         amounts = new uint256[](2);
         amounts[0] = amountIn;
@@ -83,11 +83,15 @@ contract BlackholeAdapterTest is Test {
     }
 
     function _extra(address receiver) internal view returns (bytes memory) {
+        return _extraWithDeadline(receiver, block.timestamp + 60);
+    }
+
+    function _extraWithDeadline(address receiver, uint256 deadline) internal view returns (bytes memory) {
         IBlackholeRouterV2.route[] memory routes = new IBlackholeRouterV2.route[](1);
         routes[0] = IBlackholeRouterV2.route({
             pair: pool, from: address(wavax), to: address(usdc), stable: false, concentrated: true, receiver: receiver
         });
-        return abi.encode(block.timestamp + 60, routes);
+        return abi.encode(deadline, routes);
     }
 
     function test_quoteUsesRouterHelper() public {
@@ -145,5 +149,12 @@ contract BlackholeAdapterTest is Test {
 
         vm.expectRevert(BlackholeAdapter.ZeroAddress.selector);
         new BlackholeAdapter(address(0), bhRouter, helper, owner);
+    }
+
+    function test_rejectsExpiredDeadlineLocally() public {
+        vm.warp(100);
+        uint256 deadline = block.timestamp - 1;
+        vm.expectRevert(abi.encodeWithSelector(BlackholeAdapter.DeadlineExpired.selector, deadline));
+        adapter.quote(address(wavax), address(usdc), 1e18, _extraWithDeadline(address(router), deadline));
     }
 }

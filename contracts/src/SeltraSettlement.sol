@@ -53,6 +53,7 @@ contract SeltraSettlement is ReentrancyGuard, Ownable2Step {
     error BadFeeParams();
     error ZeroAddress();
     error ZeroAmount();
+    error SameToken();
     error UnsupportedToken(address token);
 
     // ---------------------------------------------------------------- events
@@ -324,6 +325,8 @@ contract SeltraSettlement is ReentrancyGuard, Ownable2Step {
     function _checkOrder(Order calldata order, ISignatureTransfer.PermitTransferFrom calldata permit) internal view {
         if (order.maker == address(0)) revert BadMaker();
         if (order.receiver == address(0)) revert BadReceiver();
+        if (order.makerAsset == address(0) || order.takerAsset == address(0)) revert ZeroAddress();
+        if (order.makerAsset == order.takerAsset) revert SameToken();
         if (order.makingAmount == 0 || order.takingAmount == 0) revert ZeroAmount();
         if (block.timestamp > order.expiry) revert OrderExpired();
         if (order.epoch != currentEpoch[order.maker]) revert InvalidEpoch();
