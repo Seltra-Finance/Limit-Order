@@ -167,6 +167,26 @@ contract SettlementDEXTest is SeltraTestBase {
         settlement.fillOrderDEX(order, permit, sig, _route());
     }
 
+    function test_fill_revert_sameTokenOrder() public {
+        Order memory order = _defaultOrder();
+        order.takerAsset = order.makerAsset;
+        (ISignatureTransfer.PermitTransferFrom memory permit, bytes memory sig) = _signed(makerKey, order, 0);
+
+        vm.expectRevert(SeltraSettlement.SameToken.selector);
+        vm.prank(keeper);
+        settlement.fillOrderDEX(order, permit, sig, _route());
+    }
+
+    function test_fill_revert_zeroAsset() public {
+        Order memory order = _defaultOrder();
+        order.takerAsset = address(0);
+        (ISignatureTransfer.PermitTransferFrom memory permit, bytes memory sig) = _signed(makerKey, order, 0);
+
+        vm.expectRevert(SeltraSettlement.ZeroAddress.selector);
+        vm.prank(keeper);
+        settlement.fillOrderDEX(order, permit, sig, _route());
+    }
+
     function test_fill_revert_permitOrderConsistency() public {
         Order memory order = _defaultOrder();
 

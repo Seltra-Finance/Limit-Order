@@ -123,11 +123,25 @@ contract SettlementP2PTest is SeltraTestBase {
 
     function test_p2p_revert_assetMismatch() public {
         (Order memory a, Order memory b) = _crossingPair();
+        // B now sells in the same direction as A: both orders are individually
+        // valid two-token orders, but they are not opposite P2P legs.
         b.makerAsset = address(wavax);
+        b.takerAsset = address(usdc);
 
         (ISignatureTransfer.PermitTransferFrom memory permitA, bytes memory sigA) = _signed(makerKey, a, 10);
         (ISignatureTransfer.PermitTransferFrom memory permitB, bytes memory sigB) = _signed(makerBKey, b, 20);
         vm.expectRevert(SeltraSettlement.AssetMismatch.selector);
+        vm.prank(keeper);
+        settlement.fillOrderP2P(a, permitA, sigA, b, permitB, sigB);
+    }
+
+    function test_p2p_revert_sameTokenOrder() public {
+        (Order memory a, Order memory b) = _crossingPair();
+        a.takerAsset = a.makerAsset;
+
+        (ISignatureTransfer.PermitTransferFrom memory permitA, bytes memory sigA) = _signed(makerKey, a, 10);
+        (ISignatureTransfer.PermitTransferFrom memory permitB, bytes memory sigB) = _signed(makerBKey, b, 20);
+        vm.expectRevert(SeltraSettlement.SameToken.selector);
         vm.prank(keeper);
         settlement.fillOrderP2P(a, permitA, sigA, b, permitB, sigB);
     }

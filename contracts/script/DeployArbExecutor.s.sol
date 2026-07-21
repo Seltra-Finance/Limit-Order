@@ -11,9 +11,16 @@ import {ILBQuoter} from "../src/interfaces/external/ILBQuoter.sol";
 import {IPharaohSwapRouter} from "../src/interfaces/external/IPharaohSwapRouter.sol";
 import {IPharaohQuoterV2} from "../src/interfaces/external/IPharaohQuoterV2.sol";
 
+interface IArbTimelock {
+    function getMinDelay() external view returns (uint256);
+}
+
 /// @notice Deploys the isolated treasury arbitrage executor and dedicated LFJ
 ///         and Pharaoh adapter instances. This script never funds the executor
-///         and never submits an arbitrage transaction.
+///         and never submits an arbitrage transaction. On Avalanche mainnet,
+///         OWNER must be a deployed timelock with at least a 48-hour delay;
+///         GUARDIAN must be a deployed contract approved as the production Safe;
+///         its pending Ownable2Step handoff must be accepted before funding.
 contract DeployArbExecutor is Script {
     uint8 internal constant LFJ_ADAPTER_ID = 1;
     uint8 internal constant PHARAOH_ADAPTER_ID = 3;
@@ -37,6 +44,11 @@ contract DeployArbExecutor is Script {
         require(treasury != address(0), "TREASURY required");
         require(lbRouter.code.length > 0 && lbQuoter.code.length > 0, "LFJ contracts unavailable");
         require(pharaohRouter.code.length > 0 && pharaohQuoter.code.length > 0, "Pharaoh contracts unavailable");
+        if (block.chainid == 43_114) {
+            require(owner != deployer && owner.code.length > 0, "mainnet OWNER must be a deployed timelock");
+            require(IArbTimelock(owner).getMinDelay() >= 48 hours, "mainnet timelock delay below 48h");
+            require(guardian != deployer && guardian.code.length > 0, "mainnet GUARDIAN must be a contract");
+        }
 
         vm.startBroadcast(privateKey);
         SeltraArbExecutor executor = new SeltraArbExecutor(deployer, guardian, operator, treasury);

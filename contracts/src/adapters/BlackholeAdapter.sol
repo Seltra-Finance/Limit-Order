@@ -28,6 +28,7 @@ contract BlackholeAdapter is IDEXAdapter, Ownable2Step {
 
     error OnlyRouter();
     error BadRoute();
+    error DeadlineExpired(uint256 deadline);
     error InvalidReceiver(address receiver);
     error RouteNotAllowed(bytes32 routeKey);
     error ZeroAddress();
@@ -102,6 +103,7 @@ contract BlackholeAdapter is IDEXAdapter, Ownable2Step {
         returns (uint256 deadline, IBlackholeRouterV2.route[] memory routes)
     {
         (deadline, routes) = abi.decode(extra, (uint256, IBlackholeRouterV2.route[]));
+        if (deadline < block.timestamp) revert DeadlineExpired(deadline);
         // V1 intentionally supports one direct hop. Multi-hop Blackhole routes
         // require venue-specific intermediate receivers and are not admitted.
         if (routes.length != 1 || routes[0].from != tokenIn || routes[0].to != tokenOut) {

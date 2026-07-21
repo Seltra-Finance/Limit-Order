@@ -26,7 +26,7 @@ contract MockLBRouter is ILBRouter {
     ) external returns (uint256) {
         require(block.timestamp <= deadline, "expired");
         require(amountOut >= amountOutMin, "too little");
-        IERC20(path.tokenPath[0]).transferFrom(msg.sender, address(this), amountIn);
+        require(IERC20(path.tokenPath[0]).transferFrom(msg.sender, address(this), amountIn), "transfer failed");
         TestERC20(address(path.tokenPath[path.tokenPath.length - 1])).mint(to, amountOut);
         return amountOut;
     }
@@ -80,6 +80,10 @@ contract LFJLBAdapterTest is Test {
     }
 
     function _extra(address tokenOut) internal view returns (bytes memory) {
+        return _extraWithDeadline(tokenOut, block.timestamp + 60);
+    }
+
+    function _extraWithDeadline(address tokenOut, uint256 deadline) internal view returns (bytes memory) {
         uint256[] memory binSteps = new uint256[](1);
         binSteps[0] = 20;
         ILBRouter.Version[] memory versions = new ILBRouter.Version[](1);
@@ -87,7 +91,7 @@ contract LFJLBAdapterTest is Test {
         IERC20[] memory tokens = new IERC20[](2);
         tokens[0] = IERC20(address(wavax));
         tokens[1] = IERC20(tokenOut);
-        return abi.encode(block.timestamp + 60, binSteps, versions, tokens);
+        return abi.encode(deadline, binSteps, versions, tokens);
     }
 
     function test_quoteAndAmountBound() public {
@@ -139,5 +143,12 @@ contract LFJLBAdapterTest is Test {
     function test_constructorRejectsZeroAddress() public {
         vm.expectRevert(LFJLBAdapter.ZeroAddress.selector);
         new LFJLBAdapter(address(0), lbRouter, quoter);
+    }
+
+    function test_rejectsExpiredDeadlineLocally() public {
+        vm.warp(100);
+        uint256 deadline = block.timestamp - 1;
+        vm.expectRevert(abi.encodeWithSelector(LFJLBAdapter.DeadlineExpired.selector, deadline));
+        adapter.quote(address(wavax), address(usdc), 1e18, _extraWithDeadline(address(usdc), deadline));
     }
 }

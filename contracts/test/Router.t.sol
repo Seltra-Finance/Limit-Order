@@ -1,9 +1,31 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.24;
 
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
 import {SeltraTestBase} from "./utils/SeltraTestBase.sol";
 import {SeltraAggregationRouter} from "../src/SeltraAggregationRouter.sol";
 import {MockDEXAdapter} from "../src/adapters/MockDEXAdapter.sol";
+import {IDEXAdapter} from "../src/interfaces/IDEXAdapter.sol";
+
+contract InflatingAdapter is IDEXAdapter {
+    uint256 internal delivered;
+    uint256 internal reported;
+
+    function configure(uint256 delivered_, uint256 reported_) external {
+        delivered = delivered_;
+        reported = reported_;
+    }
+
+    function swap(address, address tokenOut, uint256, uint256, bytes calldata) external returns (uint256 amountOut) {
+        if (delivered > 0) require(IERC20(tokenOut).transfer(msg.sender, delivered), "transfer failed");
+        return reported;
+    }
+
+    function quote(address, address, uint256, bytes calldata) external view returns (uint256 amountOut) {
+        return reported;
+    }
+}
 
 contract RouterTest is SeltraTestBase {
     function setUp() public override {
@@ -28,6 +50,29 @@ contract RouterTest is SeltraTestBase {
         assertEq(amountOut, 40e6);
         assertEq(usdc.balanceOf(address(settlement)), 40e6, "output delivered to settlement");
         assertEq(usdc.balanceOf(address(router)), 0, "router keeps nothing");
+    }
+
+    function test_swap_ignoresInflatedAdapterReturnAndPreservesExistingBalance() public {
+        uint8 adapterId = 4;
+        InflatingAdapter inflating = new InflatingAdapter();
+        inflating.configure(10e6, 110e6);
+        vm.prank(owner);
+        router.addAdapter(adapterId, address(inflating));
+
+        // Simulate an accidental token transfer that must never subsidize a
+        // later swap, then fund only 10 USDC of real output on the adapter.
+        usdc.mint(address(router), 100e6);
+        usdc.mint(address(inflating), 10e6);
+        wavax.mint(address(settlement), 1e18);
+
+        vm.startPrank(address(settlement));
+        wavax.approve(address(router), 1e18);
+        uint256 amountOut = router.swap(adapterId, address(wavax), address(usdc), 1e18, 1, "");
+        vm.stopPrank();
+
+        assertEq(amountOut, 10e6, "router balance delta is authoritative");
+        assertEq(usdc.balanceOf(address(settlement)), 10e6, "only current-call output forwarded");
+        assertEq(usdc.balanceOf(address(router)), 100e6, "pre-existing balance cannot be drained");
     }
 
     function test_swap_revert_unknownAdapter() public {

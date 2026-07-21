@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 
 import {SeltraArbExecutor} from "../src/SeltraArbExecutor.sol";
 import {MockDEXAdapter} from "../src/adapters/MockDEXAdapter.sol";
+import {FeeOnTransferERC20} from "./utils/FeeOnTransferERC20.sol";
 import {TestERC20} from "./utils/TestERC20.sol";
 
 contract ArbExecutorTest is Test {
@@ -221,6 +222,28 @@ contract ArbExecutorTest is Test {
         vm.prank(owner);
         executor.sweep(address(tokenA), owner, 1e18);
         assertEq(tokenA.balanceOf(owner), 1e18);
+    }
+
+    function test_sweepRecoversAccidentalFeeTokenWithoutExactDelta() public {
+        FeeOnTransferERC20 feeToken = new FeeOnTransferERC20(500);
+        feeToken.mint(address(executor), 1e18);
+
+        vm.expectEmit(true, true, false, true);
+        emit SeltraArbExecutor.TokenSwept(address(feeToken), owner, 1e18);
+        vm.prank(owner);
+        executor.sweep(address(feeToken), owner, 1e18);
+
+        assertEq(feeToken.balanceOf(address(executor)), 0, "accidental token fully recovered");
+        assertEq(feeToken.balanceOf(owner), 0.95e18, "recipient accepts fee-token recovery semantics");
+    }
+
+    function test_sweepRejectsZeroTokenOrRecipient() public {
+        vm.startPrank(owner);
+        vm.expectRevert(SeltraArbExecutor.ZeroAddress.selector);
+        executor.sweep(address(0), owner, 1);
+        vm.expectRevert(SeltraArbExecutor.ZeroAddress.selector);
+        executor.sweep(address(tokenA), address(0), 1);
+        vm.stopPrank();
     }
 
     function test_adapterRegistrationIsWriteOnceAndOwnerOnly() public {

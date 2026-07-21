@@ -116,14 +116,23 @@ contract SeltraAggregationRouter is ISeltraAggregationRouter, Ownable2Step {
         if (adapter == address(0)) revert UnknownAdapter();
         if (adapterPaused[adapterId]) revert AdapterPausedError();
 
-        // Fund the adapter for exactly this swap, execute, and forward the
-        // realized output to the settlement contract (which re-verifies by
-        // balance delta).
-        IERC20(tokenIn).safeTransferFrom(msg.sender, adapter, amountIn);
-        amountOut = IDEXAdapter(adapter).swap(tokenIn, tokenOut, amountIn, minOut, extra);
+        // The router's own balance delta is authoritative. Adapter return
+        // values are advisory only: trusting them would let a buggy adapter
+        // spend tokenOut that was accidentally transferred to this contract.
+        IERC20 outputToken = IERC20(tokenOut);
+        uint256 balanceBefore = outputToken.balanceOf(address(this));
 
+        // Fund the adapter for exactly this swap, execute, and forward only
+        // the output produced during this call. Settlement independently
+        // re-verifies the amount it receives by balance delta.
+        IERC20(tokenIn).safeTransferFrom(msg.sender, adapter, amountIn);
+        IDEXAdapter(adapter).swap(tokenIn, tokenOut, amountIn, minOut, extra);
+
+        uint256 balanceAfter = outputToken.balanceOf(address(this));
+        if (balanceAfter < balanceBefore) revert InsufficientOutput();
+        amountOut = balanceAfter - balanceBefore;
         if (amountOut < minOut) revert InsufficientOutput();
-        IERC20(tokenOut).safeTransfer(msg.sender, amountOut);
+        outputToken.safeTransfer(msg.sender, amountOut);
     }
 
     /// @inheritdoc ISeltraAggregationRouter
