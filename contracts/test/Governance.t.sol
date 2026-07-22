@@ -44,6 +44,15 @@ contract GovernanceTest is SeltraTestBase {
         assertEq(router.owner(), address(timelock));
     }
 
+    function test_timelockIsSelfAdministeredAndSignerHasOperationalRoles() public view {
+        bytes32 adminRole = timelock.DEFAULT_ADMIN_ROLE();
+        assertTrue(timelock.hasRole(adminRole, address(timelock)));
+        assertFalse(timelock.hasRole(adminRole, multisig));
+        assertTrue(timelock.hasRole(timelock.PROPOSER_ROLE(), multisig));
+        assertTrue(timelock.hasRole(timelock.EXECUTOR_ROLE(), multisig));
+        assertTrue(timelock.hasRole(timelock.CANCELLER_ROLE(), multisig));
+    }
+
     function test_directOwnerCallsRevertAfterHandover() public {
         vm.expectRevert();
         vm.prank(owner);

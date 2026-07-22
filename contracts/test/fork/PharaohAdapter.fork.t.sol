@@ -18,10 +18,16 @@ import {Order, OrderLib} from "../../src/libraries/OrderLib.sol";
 contract PharaohAdapterForkTest is Test {
     address constant WAVAX = 0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7;
     address constant USDC = 0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E;
+    address constant USDT = 0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7;
+    address constant WETH_E = 0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB;
+    address constant BTC_B = 0x152b9d0FdC40C096757F570A51E494bd4b943E50;
     IPharaohSwapRouter constant PHARAOH_ROUTER = IPharaohSwapRouter(0xc8B8fCbDb5C019D7802fFb0b39603395D7d3915c);
     IPharaohQuoterV2 constant PHARAOH_QUOTER = IPharaohQuoterV2(0xB7297301b7CC659BB96D51754643A0Df6eEA2138);
     ISignatureTransfer constant PERMIT2 = ISignatureTransfer(0x000000000022D473030F116dDEE9F6B43aC78BA3);
     address constant WAVAX_USDC_POOL = 0xf01449C0bA930B6e2CaCA3DEF3CCBd7a3E589534;
+    address constant WETH_WAVAX_POOL = 0xFf0855A9027f5F5c2bbaCC4aAC477AfbeeefbeA9;
+    address constant BTCB_WAVAX_POOL = 0x5cA009013F6B898D134b6798B336A4592f3B4aF2;
+    address constant USDT_USDC_POOL = 0x9bFE3108Cc16D17a9Ec65545a0f50B2CA1C970c0;
     uint8 constant PHARAOH_ADAPTER_ID = 3;
     int24 constant TICK_SPACING = 10;
 
@@ -39,10 +45,13 @@ contract PharaohAdapterForkTest is Test {
         }
         string memory url = vm.envOr("AVAX_RPC_URL", string(""));
         require(bytes(url).length != 0, "AVAX_RPC_URL required when RUN_MAINNET_FORKS=true");
-        vm.createSelectFork(url);
+        vm.createSelectFork(url, vm.envOr("AVAX_FORK_BLOCK", uint256(90_884_800)));
         require(address(PHARAOH_ROUTER).code.length > 0, "Pharaoh SwapRouter has no code");
         require(address(PHARAOH_QUOTER).code.length > 0, "Pharaoh QuoterV2 has no code");
         require(WAVAX_USDC_POOL.code.length > 0, "Pharaoh WAVAX/USDC pool has no code");
+        require(WETH_WAVAX_POOL.code.length > 0, "Pharaoh WETH.e/WAVAX pool has no code");
+        require(BTCB_WAVAX_POOL.code.length > 0, "Pharaoh BTC.b/WAVAX pool has no code");
+        require(USDT_USDC_POOL.code.length > 0, "Pharaoh USDt/USDC pool has no code");
 
         address owner = makeAddr("owner");
         address guardian = makeAddr("guardian");
@@ -56,6 +65,13 @@ contract PharaohAdapterForkTest is Test {
         router.addAdapter(PHARAOH_ADAPTER_ID, address(adapter));
         settlement.setTokenAllowed(WAVAX, true);
         settlement.setTokenAllowed(USDC, true);
+        settlement.setTokenAllowed(USDT, true);
+        settlement.setTokenAllowed(WETH_E, true);
+        settlement.setTokenAllowed(BTC_B, true);
+        settlement.setPairAllowed(WAVAX, USDC, true);
+        settlement.setPairAllowed(WETH_E, WAVAX, true);
+        settlement.setPairAllowed(BTC_B, WAVAX, true);
+        settlement.setPairAllowed(USDT, USDC, true);
         vm.stopPrank();
 
         vm.startPrank(maker);
@@ -69,7 +85,14 @@ contract PharaohAdapterForkTest is Test {
     }
 
     function _quote(address tokenIn, address tokenOut, uint256 amountIn) internal returns (uint256) {
-        return router.quote(PHARAOH_ADAPTER_ID, tokenIn, tokenOut, amountIn, _extra(TICK_SPACING));
+        return _quoteAt(tokenIn, tokenOut, amountIn, TICK_SPACING);
+    }
+
+    function _quoteAt(address tokenIn, address tokenOut, uint256 amountIn, int24 tickSpacing)
+        internal
+        returns (uint256)
+    {
+        return router.quote(PHARAOH_ADAPTER_ID, tokenIn, tokenOut, amountIn, _extra(tickSpacing));
     }
 
     function _sign(Order memory order, uint256 nonce)
@@ -177,5 +200,38 @@ contract PharaohAdapterForkTest is Test {
     function test_fork_revertsOnNoLiquidity() public {
         vm.expectRevert();
         router.quote(PHARAOH_ADAPTER_ID, WAVAX, USDC, 1e18, _extra(60));
+    }
+
+    function test_fork_wethWavaxQuoteAndRoundTrip() public {
+        _assertRoundTrip(WETH_E, WAVAX, 1e18, 5);
+    }
+
+    function test_fork_btcbWavaxQuoteAndRoundTrip() public {
+        _assertRoundTrip(BTC_B, WAVAX, 1e6, 5); // 0.01 BTC.b
+    }
+
+    function test_fork_usdtUsdcQuoteAndRoundTrip() public {
+        _assertRoundTrip(USDT, USDC, 1_000e6, 1);
+    }
+
+    function _assertRoundTrip(address tokenIn, address tokenOut, uint256 amountIn, int24 tickSpacing) internal {
+        bytes memory forward = _extra(tickSpacing);
+        uint256 quotedOut = _quoteAt(tokenIn, tokenOut, amountIn, tickSpacing);
+        assertGt(quotedOut, 0, "priority-pair forward quote");
+
+        deal(tokenIn, address(settlement), amountIn);
+        vm.startPrank(address(settlement));
+        IERC20(tokenIn).approve(address(router), amountIn);
+        uint256 amountOut =
+            router.swap(PHARAOH_ADAPTER_ID, tokenIn, tokenOut, amountIn, (quotedOut * 97) / 100, forward);
+        bytes memory reverse = _extra(tickSpacing);
+        uint256 reverseQuote = _quoteAt(tokenOut, tokenIn, amountOut, tickSpacing);
+        IERC20(tokenOut).approve(address(router), amountOut);
+        uint256 amountBack =
+            router.swap(PHARAOH_ADAPTER_ID, tokenOut, tokenIn, amountOut, (reverseQuote * 97) / 100, reverse);
+        vm.stopPrank();
+
+        assertGt(amountBack, 0, "priority-pair reverse swap");
+        assertEq(IERC20(tokenOut).balanceOf(address(router)), 0, "router output residue");
     }
 }

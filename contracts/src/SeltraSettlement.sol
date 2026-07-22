@@ -54,6 +54,7 @@ contract SeltraSettlement is ReentrancyGuard, Ownable2Step {
     error ZeroAddress();
     error ZeroAmount();
     error SameToken();
+    error PairNotAllowed(address tokenA, address tokenB);
     error UnsupportedToken(address token);
 
     // ---------------------------------------------------------------- events
@@ -82,6 +83,7 @@ contract SeltraSettlement is ReentrancyGuard, Ownable2Step {
     event GuardianSet(address guardian);
     event SurplusParamsSet(uint16 makerSurplusBps, uint16 protocolFeeBps, address treasury);
     event TokenAllowed(address indexed token, bool allowed);
+    event PairAllowed(address indexed token0, address indexed token1, bool allowed);
 
     // ---------------------------------------------------------------- state
 
@@ -108,6 +110,12 @@ contract SeltraSettlement is ReentrancyGuard, Ownable2Step {
     ///         tokens. Mutations go through the owner (timelock + multisig in
     ///         production).
     mapping(address => bool) public allowedTokens;
+
+    /// @notice Exact unordered pair allowlist. Token-level admission alone is
+    ///         insufficient because it would enable every combination of
+    ///         otherwise approved assets. Pair changes are timelocked through
+    ///         the owner in production.
+    mapping(bytes32 => bool) public allowedPairs;
 
     modifier whenFillsNotPaused() {
         if (fillsPaused) revert FillsPausedError();
@@ -141,6 +149,16 @@ contract SeltraSettlement is ReentrancyGuard, Ownable2Step {
 
     function keeperSurplusBps() external view returns (uint16) {
         return 10_000 - makerSurplusBps;
+    }
+
+    function pairKey(address tokenA, address tokenB) public pure returns (bytes32) {
+        (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+        return keccak256(abi.encode(token0, token1));
+    }
+
+    function isPairAllowed(address tokenA, address tokenB) public view returns (bool) {
+        if (tokenA == address(0) || tokenB == address(0) || tokenA == tokenB) return false;
+        return allowedPairs[pairKey(tokenA, tokenB)];
     }
 
     // ------------------------------------------------------------- DEX fill
@@ -313,8 +331,17 @@ contract SeltraSettlement is ReentrancyGuard, Ownable2Step {
     }
 
     function setTokenAllowed(address token, bool allowed) external onlyOwner {
+        if (token == address(0)) revert ZeroAddress();
         allowedTokens[token] = allowed;
         emit TokenAllowed(token, allowed);
+    }
+
+    function setPairAllowed(address tokenA, address tokenB, bool allowed) external onlyOwner {
+        if (tokenA == address(0) || tokenB == address(0)) revert ZeroAddress();
+        if (tokenA == tokenB) revert SameToken();
+        (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+        allowedPairs[pairKey(token0, token1)] = allowed;
+        emit PairAllowed(token0, token1, allowed);
     }
 
     // ------------------------------------------------------------- internals
@@ -337,6 +364,9 @@ contract SeltraSettlement is ReentrancyGuard, Ownable2Step {
         if (permit.deadline != order.expiry) revert BadPermitDeadline();
         if (!allowedTokens[order.makerAsset]) revert TokenNotAllowed(order.makerAsset);
         if (!allowedTokens[order.takerAsset]) revert TokenNotAllowed(order.takerAsset);
+        if (!isPairAllowed(order.makerAsset, order.takerAsset)) {
+            revert PairNotAllowed(order.makerAsset, order.takerAsset);
+        }
     }
 
     function _permitWitnessPull(

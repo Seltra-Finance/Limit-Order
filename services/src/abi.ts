@@ -14,6 +14,7 @@ export const SETTLEMENT_ABI = [
   "function makerSurplusBps() view returns (uint16)",
   "function protocolFeeBps() view returns (uint16)",
   "function allowedTokens(address token) view returns (bool)",
+  "function isPairAllowed(address tokenA,address tokenB) view returns (bool)",
   "function incrementEpoch()",
   "function pauseFills()",
   "function unpauseFills()",

@@ -10,7 +10,12 @@ export class NotionalCaps {
   constructor(
     readonly perOrder: bigint,
     readonly daily: bigint,
+    private readonly byToken: Record<string, { perOrder: bigint; daily: bigint }> = {},
   ) {}
+
+  private limits(token: string): { perOrder: bigint; daily: bigint } {
+    return this.byToken[token.toLowerCase()] ?? { perOrder: this.perOrder, daily: this.daily };
+  }
 
   private dayOf(nowMs: number): number {
     return Math.floor(nowMs / 86_400_000); // UTC day bucket
@@ -23,8 +28,9 @@ export class NotionalCaps {
 
   /** True if a fill of `amount` (quote units) is within both caps. */
   allows(token: string, amount: bigint, nowMs = Date.now()): boolean {
-    if (this.perOrder > 0n && amount > this.perOrder) return false;
-    if (this.daily > 0n && this.usedToday(token, nowMs) + amount > this.daily) return false;
+    const limits = this.limits(token);
+    if (limits.perOrder > 0n && amount > limits.perOrder) return false;
+    if (limits.daily > 0n && this.usedToday(token, nowMs) + amount > limits.daily) return false;
     return true;
   }
 

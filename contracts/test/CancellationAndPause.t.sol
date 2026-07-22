@@ -166,4 +166,38 @@ contract CancellationAndPauseTest is SeltraTestBase {
         vm.prank(keeper);
         settlement.setTokenAllowed(address(wavax), false);
     }
+
+    function test_setPairAllowed_isUnorderedAndOwnerOnly() public {
+        assertTrue(settlement.isPairAllowed(address(wavax), address(usdc)));
+        assertTrue(settlement.isPairAllowed(address(usdc), address(wavax)));
+
+        vm.expectRevert();
+        vm.prank(keeper);
+        settlement.setPairAllowed(address(wavax), address(usdc), false);
+
+        vm.prank(owner);
+        settlement.setPairAllowed(address(usdc), address(wavax), false);
+        assertFalse(settlement.isPairAllowed(address(wavax), address(usdc)));
+    }
+
+    function test_unregisteredPair_revertsBeforeFundsMove() public {
+        vm.prank(owner);
+        settlement.setPairAllowed(address(wavax), address(usdc), false);
+
+        Order memory order = _defaultOrder();
+        (ISignatureTransfer.PermitTransferFrom memory permit, bytes memory sig) = _signed(makerKey, order, 0);
+        vm.expectRevert(abi.encodeWithSelector(SeltraSettlement.PairNotAllowed.selector, address(wavax), address(usdc)));
+        vm.prank(keeper);
+        settlement.fillOrderDEX(order, permit, sig, _route());
+        assertEq(wavax.balanceOf(maker), 100e18);
+    }
+
+    function test_setPairAllowed_rejectsInvalidEndpoints() public {
+        vm.startPrank(owner);
+        vm.expectRevert(SeltraSettlement.ZeroAddress.selector);
+        settlement.setPairAllowed(address(0), address(usdc), true);
+        vm.expectRevert(SeltraSettlement.SameToken.selector);
+        settlement.setPairAllowed(address(wavax), address(wavax), true);
+        vm.stopPrank();
+    }
 }

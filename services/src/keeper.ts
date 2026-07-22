@@ -2,7 +2,7 @@ import { AbiCoder, Contract, Wallet, type Provider } from "ethers";
 
 import { SETTLEMENT_ABI } from "./abi.js";
 import { NotionalCaps } from "./caps.js";
-import type { SeltraConfig } from "./config.js";
+import { quotePolicyFor, type SeltraConfig } from "./config.js";
 import type { Match } from "./matching.js";
 import { orderToJson, permitToJson, type StoredOrder } from "./types.js";
 import { VenueQuoteCoordinator, findPairName, type BestVenueQuoter, type DexQuote } from "./venues.js";
@@ -37,7 +37,13 @@ export class Keeper {
     this.wallet = new Wallet(privateKey, provider);
     this.settlement = new Contract(config.settlement, SETTLEMENT_ABI, this.wallet);
     this.quoter = quoter ?? new VenueQuoteCoordinator(config, provider);
-    this.caps = new NotionalCaps(config.keeperMaxOrderNotional, config.keeperDailyNotionalCap);
+    const tokenCaps = Object.fromEntries(
+      Object.entries(config.quotePolicies ?? {}).map(([token, policy]) => [
+        token,
+        { perOrder: policy.keeperMaxOrderNotional, daily: policy.keeperDailyNotionalCap },
+      ]),
+    );
+    this.caps = new NotionalCaps(config.keeperMaxOrderNotional, config.keeperDailyNotionalCap, tokenCaps);
   }
 
   /** DEX fill using the exact adapter + calldata tuple that produced the quote. */
@@ -148,7 +154,8 @@ export class Keeper {
   ): Promise<boolean> {
     // Development deployments can use mock tokens without a native-token
     // conversion route. Mainnet configuration forbids a zero profit floor.
-    if (this.config.keeperMinProfit === 0n) return true;
+    const minProfit = quotePolicyFor(this.config, quoteToken).keeperMinProfit;
+    if (minProfit === 0n) return true;
     const feeData = await this.provider.getFeeData();
     const gasPrice = feeData.maxFeePerGas ?? feeData.gasPrice;
     if (!gasPrice || gasPrice <= 0n) return false;
@@ -157,7 +164,7 @@ export class Keeper {
       this.convertToQuote(rewardAmount, rewardToken, quoteToken),
       this.convertToQuote(gasNative, this.config.wrappedNative, quoteToken),
     ]);
-    return rewardQuote >= gasQuote + this.config.keeperMinProfit;
+    return rewardQuote >= gasQuote + minProfit;
   }
 
   private async convertToQuote(amount: bigint, token: string, quoteToken: string): Promise<bigint> {

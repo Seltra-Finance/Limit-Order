@@ -33,8 +33,8 @@ contract DeployArbExecutor is Script {
         address operator = vm.envAddress("OPERATOR");
         address treasury = vm.envAddress("TREASURY");
 
-        address lbRouter = vm.envOr("LFJ_LB_ROUTER", 0xb4315e873dBcf96Ffd0acd8EA43f689D8c20fB30);
-        address lbQuoter = vm.envOr("LFJ_LB_QUOTER", 0xd76019A16606FDa4651f636D9751f500Ed776250);
+        address lbRouter = vm.envOr("LFJ_LB_ROUTER", 0x18556DA13313f3532c54711497A8FedAC273220E);
+        address lbQuoter = vm.envOr("LFJ_LB_QUOTER", 0x9A550a522BBaDFB69019b0432800Ed17855A51C3);
         address pharaohRouter = vm.envOr("PHARAOH_SWAP_ROUTER", 0xc8B8fCbDb5C019D7802fFb0b39603395D7d3915c);
         address pharaohQuoter = vm.envOr("PHARAOH_QUOTER_V2", 0xB7297301b7CC659BB96D51754643A0Df6eEA2138);
 

@@ -27,8 +27,10 @@ const ADAPTER_ABI = [
 ];
 const TIMELOCK_ABI = [
   "function getMinDelay() view returns (uint256)",
+  "function DEFAULT_ADMIN_ROLE() view returns (bytes32)",
   "function PROPOSER_ROLE() view returns (bytes32)",
   "function EXECUTOR_ROLE() view returns (bytes32)",
+  "function CANCELLER_ROLE() view returns (bytes32)",
   "function hasRole(bytes32 role,address account) view returns (bool)",
 ];
 const SAFE_ABI = [
@@ -92,6 +94,9 @@ export async function preflightRuntime(config: SeltraConfig, provider: Provider)
     for (const token of [pair.base, pair.quote]) {
       if (!(await settlement.allowedTokens(token))) throw new Error(`token is not allowlisted on settlement: ${token}`);
     }
+    if (config.chainId === AVALANCHE_MAINNET_CHAIN_ID && !(await settlement.isPairAllowed(pair.base, pair.quote))) {
+      throw new Error(`pair is not allowlisted on settlement: ${pair.base}/${pair.quote}`);
+    }
   }
 
   if (config.chainId === AVALANCHE_MAINNET_CHAIN_ID) {
@@ -108,27 +113,51 @@ export async function preflightRuntime(config: SeltraConfig, provider: Provider)
     }
     const [settlementGuardian, routerGuardian] = await Promise.all([settlement.guardian(), router.guardian()]);
     assertSame(settlementGuardian, routerGuardian, "guardian");
-    if ((await provider.getCode(settlementGuardian)) === "0x") {
-      throw new Error("mainnet guardian must be a deployed multisig, not an EOA");
-    }
     const timelock = new Contract(settlementOwner, TIMELOCK_ABI, provider);
-    const safe = new Contract(settlementGuardian, SAFE_ABI, provider);
-    const [minDelay, proposerRole, executorRole, safeThreshold, safeOwners] = await Promise.all([
+    const [minDelay, adminRole, proposerRole, executorRole, cancellerRole] = await Promise.all([
       timelock.getMinDelay(),
+      timelock.DEFAULT_ADMIN_ROLE(),
       timelock.PROPOSER_ROLE(),
       timelock.EXECUTOR_ROLE(),
-      safe.getThreshold(),
-      safe.getOwners(),
+      timelock.CANCELLER_ROLE(),
     ]);
     if (BigInt(minDelay) < 172_800n) throw new Error("mainnet timelock delay is below 48 hours");
-    if (BigInt(safeThreshold) < 2n || safeOwners.length < Number(safeThreshold)) {
-      throw new Error("mainnet guardian Safe threshold is below 2");
-    }
     if (!(await timelock.hasRole(proposerRole, settlementGuardian))) {
-      throw new Error("guardian Safe does not hold the timelock proposer role");
+      throw new Error("guardian does not hold the timelock proposer role");
     }
     if (!(await timelock.hasRole(executorRole, settlementGuardian))) {
-      throw new Error("guardian Safe does not hold the timelock executor role");
+      throw new Error("guardian does not hold the timelock executor role");
+    }
+    if (!(await timelock.hasRole(cancellerRole, settlementGuardian))) {
+      throw new Error("guardian does not hold the timelock canceller role");
+    }
+    if (
+      (await timelock.hasRole(proposerRole, ZERO)) ||
+      (await timelock.hasRole(executorRole, ZERO)) ||
+      (await timelock.hasRole(cancellerRole, ZERO))
+    ) {
+      throw new Error("mainnet timelock operational roles must not be open to everyone");
+    }
+    if (!(await timelock.hasRole(adminRole, settlementOwner))) {
+      throw new Error("mainnet timelock is not self-administered");
+    }
+    if (await timelock.hasRole(adminRole, settlementGuardian)) {
+      throw new Error("guardian has immediate timelock admin privileges");
+    }
+    const guardianCode = await provider.getCode(settlementGuardian);
+    if (guardianCode === "0x") {
+      if (!config.bootstrapEoaGovernance) {
+        throw new Error("mainnet EOA guardian requires BOOTSTRAP_EOA_GOVERNANCE_ACK");
+      }
+    } else {
+      if (config.bootstrapEoaGovernance) {
+        throw new Error("bootstrap EOA acknowledgement is set but guardian is a contract");
+      }
+      const safe = new Contract(settlementGuardian, SAFE_ABI, provider);
+      const [safeThreshold, safeOwners] = await Promise.all([safe.getThreshold(), safe.getOwners()]);
+      if (BigInt(safeThreshold) < 2n || safeOwners.length < Number(safeThreshold)) {
+        throw new Error("mainnet guardian Safe threshold is below 2");
+      }
     }
     const blackholeAddress = String(await router.adapters(2));
     const blackhole = new Contract(blackholeAddress, OWNABLE_ABI, provider);

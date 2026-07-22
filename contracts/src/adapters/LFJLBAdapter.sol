@@ -28,7 +28,7 @@ contract LFJLBAdapter is IDEXAdapter {
     error ZeroAddress();
 
     address public immutable ROUTER; // Seltra aggregation router
-    ILBRouter public immutable LB_ROUTER; // v2.1: 0xb4315e873dBcf96Ffd0acd8EA43f689D8c20fB30
+    ILBRouter public immutable LB_ROUTER; // v2.2: 0x18556DA13313f3532c54711497A8FedAC273220E
     ILBQuoter public immutable LB_QUOTER;
 
     constructor(address router_, ILBRouter lbRouter_, ILBQuoter lbQuoter_) {

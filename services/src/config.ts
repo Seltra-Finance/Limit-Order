@@ -5,18 +5,30 @@ export const CANONICAL_PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
 export const MAINNET_WAVAX = "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7";
 export const MAINNET_USDC = "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E";
 export const MAINNET_USDT = "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7";
+export const MAINNET_WETH_E = "0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB";
+export const MAINNET_BTC_B = "0x152b9d0FdC40C096757F570A51E494bd4b943E50";
 export const MAINNET_BLACKHOLE_WAVAX_USDC_POOL = "0x41100C6D2c6920B10d12Cd8D59c8A9AA2eF56fC7";
+export const MAINNET_BLACKHOLE_WETH_WAVAX_POOL = "0x5E128EbC09C918DDAE3Ca1668d4EE9527dc00D78";
+export const MAINNET_BLACKHOLE_BTCB_WAVAX_POOL = "0x8FEF4fE4970a5D6bFa7C65871a2EbFD0F42aa822";
 export const MAINNET_BLACKHOLE_USDC_USDT_POOL = "0x859592A4A469610E573f96Ef87A0e5565F9a94c8";
-export const MAINNET_LFJ_ROUTER = "0xb4315e873dBcf96Ffd0acd8EA43f689D8c20fB30";
-export const MAINNET_LFJ_QUOTER = "0xd76019A16606FDa4651f636D9751f500Ed776250";
+export const MAINNET_LFJ_ROUTER = "0x18556DA13313f3532c54711497A8FedAC273220E";
+export const MAINNET_LFJ_QUOTER = "0x9A550a522BBaDFB69019b0432800Ed17855A51C3";
 export const MAINNET_BLACKHOLE_ROUTER = "0xe946A9f39312E2346BA79DAb865B0e9A74f2F981";
 export const MAINNET_BLACKHOLE_HELPER = "0x53D569BC4B37ADbBDB6ab447D92ADf42514AE480";
 export const MAINNET_PHARAOH_ROUTER = "0xc8B8fCbDb5C019D7802fFb0b39603395D7d3915c";
 export const MAINNET_PHARAOH_QUOTER = "0xB7297301b7CC659BB96D51754643A0Df6eEA2138";
+export const BOOTSTRAP_EOA_GOVERNANCE_ACK = "I_ACCEPT_SINGLE_EOA_GOVERNANCE_RISK";
 
 export interface PairConfig {
   base: string;
   quote: string;
+}
+
+export interface QuotePolicy {
+  minOrderNotional: bigint;
+  keeperMinProfit: bigint;
+  keeperMaxOrderNotional: bigint;
+  keeperDailyNotionalCap: bigint;
 }
 
 interface DexVenueBase {
@@ -47,6 +59,7 @@ export type DexVenueConfig = MockVenueConfig | LfjVenueConfig | PharaohVenueConf
 
 export interface SeltraConfig {
   rpcUrl: string;
+  rpcUrls?: string[];
   chainId: number;
   permit2: string;
   settlement: string;
@@ -68,6 +81,8 @@ export interface SeltraConfig {
   maxOrderTtlSeconds: number;
   keeperMaxOrderNotional: bigint;
   keeperDailyNotionalCap: bigint;
+  /** Quote-token-native limits. Required on mainnet; global fields are dev fallbacks. */
+  quotePolicies?: Record<string, QuotePolicy>;
   wrappedNative: string;
   gasCostBufferBps: number;
   quoteDeadlineSeconds: number;
@@ -76,11 +91,16 @@ export interface SeltraConfig {
   indexerStartBlock: number;
   indexerConfirmations: number;
   indexerBatchSize: number;
+  /** Temporary mainnet mode: guardian and timelock roles are held by one EOA. */
+  bootstrapEoaGovernance?: boolean;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): SeltraConfig {
   const chainId = integer(env.CHAIN_ID ?? "43113", "CHAIN_ID", 1);
   const mainnet = chainId === AVALANCHE_MAINNET_CHAIN_ID;
+  const rpcUrls = parseRpcUrls(
+    env.RPC_URLS ?? env.RPC_URL ?? "https://api.avax-test.network/ext/bc/C/rpc",
+  );
   const settlement = address(required(env, "SETTLEMENT"), "SETTLEMENT");
   const router = address(required(env, "ROUTER"), "ROUTER");
   const pairs = parsePairs(env.PAIRS ?? "{}");
@@ -88,9 +108,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SeltraConfig {
   const dexVenues = env.DEX_VENUES
     ? parseDexVenues(env.DEX_VENUES, pairs)
     : [{ kind: "mock", name: "Development mock", adapterId: dexAdapterId } satisfies MockVenueConfig];
+  const bootstrapEoaGovernance = parseBootstrapEoaGovernance(env.BOOTSTRAP_EOA_GOVERNANCE_ACK);
 
   const config: SeltraConfig = {
-    rpcUrl: httpUrl(env.RPC_URL ?? "https://api.avax-test.network/ext/bc/C/rpc", "RPC_URL"),
+    rpcUrl: rpcUrls[0],
+    rpcUrls,
     chainId,
     permit2: address(env.PERMIT2 ?? CANONICAL_PERMIT2, "PERMIT2"),
     settlement,
@@ -120,6 +142,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SeltraConfig {
       env.KEEPER_DAILY_NOTIONAL_CAP ?? "0",
       "KEEPER_DAILY_NOTIONAL_CAP",
     ),
+    quotePolicies: env.QUOTE_POLICIES ? parseQuotePolicies(env.QUOTE_POLICIES) : {},
     wrappedNative: address(
       env.WRAPPED_NATIVE ?? (mainnet ? MAINNET_WAVAX : "0xd00ae08403B9bbb9124bB305C09058E32C39A48c"),
       "WRAPPED_NATIVE",
@@ -131,15 +154,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SeltraConfig {
     indexerStartBlock: integer(env.INDEXER_START_BLOCK ?? "0", "INDEXER_START_BLOCK", 0),
     indexerConfirmations: integer(env.INDEXER_CONFIRMATIONS ?? "2", "INDEXER_CONFIRMATIONS", 0, 100),
     indexerBatchSize: integer(env.INDEXER_BATCH_SIZE ?? "2000", "INDEXER_BATCH_SIZE", 1, 20_000),
+    bootstrapEoaGovernance,
   };
 
   if (mainnet) validateMainnet(config, env);
   return config;
 }
 
+function parseBootstrapEoaGovernance(raw: string | undefined): boolean {
+  if (!raw?.trim()) return false;
+  if (raw !== BOOTSTRAP_EOA_GOVERNANCE_ACK) {
+    throw new Error(`BOOTSTRAP_EOA_GOVERNANCE_ACK must equal ${BOOTSTRAP_EOA_GOVERNANCE_ACK}`);
+  }
+  return true;
+}
+
 function validateMainnet(config: SeltraConfig, env: NodeJS.ProcessEnv): void {
-  if (!env.RPC_URL) throw new Error("Avalanche mainnet requires an explicit RPC_URL");
-  if (!config.rpcUrl.startsWith("https://")) throw new Error("mainnet RPC_URL must use https");
+  if (!env.RPC_URLS) throw new Error("Avalanche mainnet requires explicit RPC_URLS");
+  if ((config.rpcUrls?.length ?? 0) < 2) throw new Error("mainnet RPC_URLS requires primary and fallback endpoints");
+  if (config.rpcUrls?.some((url) => !url.startsWith("https://"))) {
+    throw new Error("mainnet RPC_URLS entries must use https");
+  }
   if (env.MAINNET_CONFIRM !== "SELTRA_MAINNET_CONFIG_REVIEWED") {
     throw new Error("mainnet requires MAINNET_CONFIRM=SELTRA_MAINNET_CONFIG_REVIEWED");
   }
@@ -149,16 +184,12 @@ function validateMainnet(config: SeltraConfig, env: NodeJS.ProcessEnv): void {
   if (!config.databaseUrl) throw new Error("mainnet requires DATABASE_URL; MemoryStore is development-only");
   if (config.indexerStartBlock === 0) throw new Error("mainnet requires the deployment INDEXER_START_BLOCK");
   if (config.indexerConfirmations < 1) throw new Error("mainnet requires at least one indexer confirmation");
-  if (config.keeperMinProfit <= 0n) throw new Error("mainnet KEEPER_MIN_PROFIT must be positive");
-  if (config.minOrderNotional <= 0n) throw new Error("mainnet MIN_ORDER_NOTIONAL must be positive");
-  if (config.keeperMaxOrderNotional <= 0n || config.keeperDailyNotionalCap <= 0n) {
-    throw new Error("mainnet keeper rollout caps must be positive");
-  }
-  if (config.keeperMaxOrderNotional > config.keeperDailyNotionalCap) {
-    throw new Error("KEEPER_MAX_ORDER_NOTIONAL cannot exceed KEEPER_DAILY_NOTIONAL_CAP");
-  }
-  if (config.minOrderNotional > config.keeperMaxOrderNotional) {
-    throw new Error("MIN_ORDER_NOTIONAL cannot exceed KEEPER_MAX_ORDER_NOTIONAL");
+  if (!env.MAX_ORDER_TTL_SECONDS) throw new Error("mainnet MAX_ORDER_TTL_SECONDS must be explicit");
+  assertMainnetQuotePolicy(config, MAINNET_USDC, "USDC");
+  assertMainnetQuotePolicy(config, MAINNET_WAVAX, "WAVAX");
+  assertMainnetQuotePolicy(config, MAINNET_USDT, "USDt");
+  if (Object.keys(config.quotePolicies ?? {}).length !== 3) {
+    throw new Error("mainnet QUOTE_POLICIES must contain exactly USDC, WAVAX and USDt");
   }
   if (config.wrappedNative.toLowerCase() !== MAINNET_WAVAX.toLowerCase()) {
     throw new Error("mainnet WRAPPED_NATIVE must be canonical WAVAX");
@@ -171,9 +202,11 @@ function validateMainnet(config: SeltraConfig, env: NodeJS.ProcessEnv): void {
   }
 
   assertPair(config.pairs["WAVAX/USDC"], MAINNET_WAVAX, MAINNET_USDC, "WAVAX/USDC");
+  assertPair(config.pairs["WETH.e/WAVAX"], MAINNET_WETH_E, MAINNET_WAVAX, "WETH.e/WAVAX");
+  assertPair(config.pairs["BTC.b/WAVAX"], MAINNET_BTC_B, MAINNET_WAVAX, "BTC.b/WAVAX");
   assertPair(config.pairs["USDC/USDt"], MAINNET_USDC, MAINNET_USDT, "USDC/USDt");
-  if (Object.keys(config.pairs).length !== 2) {
-    throw new Error("initial mainnet registry is pinned to WAVAX/USDC and USDC/USDt");
+  if (Object.keys(config.pairs).length !== 4) {
+    throw new Error("initial mainnet registry is pinned to the four validated launch pairs");
   }
 
   if (config.dexVenues.length !== 3) throw new Error("mainnet requires exactly three production venues");
@@ -190,8 +223,15 @@ function validateMainnet(config: SeltraConfig, env: NodeJS.ProcessEnv): void {
   if (!blackhole) throw new Error("mainnet adapter 2 must be Blackhole");
   if (!pharaoh) throw new Error("mainnet adapter 3 must be Pharaoh");
   assertBlackholeRoute(blackhole.routes["WAVAX/USDC"], MAINNET_BLACKHOLE_WAVAX_USDC_POOL, "WAVAX/USDC");
+  assertBlackholeRoute(blackhole.routes["WETH.e/WAVAX"], MAINNET_BLACKHOLE_WETH_WAVAX_POOL, "WETH.e/WAVAX");
+  assertBlackholeRoute(blackhole.routes["BTC.b/WAVAX"], MAINNET_BLACKHOLE_BTCB_WAVAX_POOL, "BTC.b/WAVAX");
   assertBlackholeRoute(blackhole.routes["USDC/USDt"], MAINNET_BLACKHOLE_USDC_USDT_POOL, "USDC/USDt");
-  if (pharaoh.routes["WAVAX/USDC"]?.tickSpacing !== 10 || pharaoh.routes["USDC/USDt"]?.tickSpacing !== 1) {
+  if (
+    pharaoh.routes["WAVAX/USDC"]?.tickSpacing !== 10 ||
+    pharaoh.routes["WETH.e/WAVAX"]?.tickSpacing !== 5 ||
+    pharaoh.routes["BTC.b/WAVAX"]?.tickSpacing !== 5 ||
+    pharaoh.routes["USDC/USDt"]?.tickSpacing !== 1
+  ) {
     throw new Error("Pharaoh launch-pair tick spacings do not match the validated pools");
   }
 }
@@ -208,6 +248,52 @@ function parsePairs(raw: string): Record<string, PairConfig> {
     pairs[name] = { base, quote };
   }
   return pairs;
+}
+
+function parseQuotePolicies(raw: string): Record<string, QuotePolicy> {
+  const parsed = parseJsonObject(raw, "QUOTE_POLICIES");
+  const policies: Record<string, QuotePolicy> = {};
+  for (const [token, item] of Object.entries(parsed)) {
+    const normalizedToken = address(token, `QUOTE_POLICIES.${token}`).toLowerCase();
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`QUOTE_POLICIES.${token} must be an object`);
+    }
+    const value = item as Record<string, unknown>;
+    const policy: QuotePolicy = {
+      minOrderNotional: positiveBigInt(String(value.minOrderNotional ?? ""), `${token}.minOrderNotional`),
+      keeperMinProfit: positiveBigInt(String(value.keeperMinProfit ?? ""), `${token}.keeperMinProfit`),
+      keeperMaxOrderNotional: positiveBigInt(
+        String(value.keeperMaxOrderNotional ?? ""),
+        `${token}.keeperMaxOrderNotional`,
+      ),
+      keeperDailyNotionalCap: positiveBigInt(
+        String(value.keeperDailyNotionalCap ?? ""),
+        `${token}.keeperDailyNotionalCap`,
+      ),
+    };
+    if (policy.minOrderNotional > policy.keeperMaxOrderNotional) {
+      throw new Error(`${token} minimum cannot exceed its per-order keeper cap`);
+    }
+    if (policy.keeperMaxOrderNotional > policy.keeperDailyNotionalCap) {
+      throw new Error(`${token} per-order keeper cap cannot exceed its daily cap`);
+    }
+    policies[normalizedToken] = policy;
+  }
+  return policies;
+}
+
+export function quotePolicyFor(config: SeltraConfig, quoteToken: string): QuotePolicy {
+  return config.quotePolicies?.[quoteToken.toLowerCase()] ?? {
+    minOrderNotional: config.minOrderNotional,
+    keeperMinProfit: config.keeperMinProfit,
+    keeperMaxOrderNotional: config.keeperMaxOrderNotional,
+    keeperDailyNotionalCap: config.keeperDailyNotionalCap,
+  };
+}
+
+function assertMainnetQuotePolicy(config: SeltraConfig, token: string, symbol: string): void {
+  const policy = config.quotePolicies?.[token.toLowerCase()];
+  if (!policy) throw new Error(`mainnet QUOTE_POLICIES is missing ${symbol}`);
 }
 
 function parseDexVenues(raw: string, pairs: Record<string, PairConfig>): DexVenueConfig[] {
@@ -337,6 +423,12 @@ function nonNegativeBigInt(value: string, label: string): bigint {
   }
 }
 
+function positiveBigInt(value: string, label: string): bigint {
+  const parsed = nonNegativeBigInt(value, label);
+  if (parsed === 0n) throw new Error(`${label} must be a positive integer`);
+  return parsed;
+}
+
 function httpUrl(value: string, label: string): string {
   try {
     const url = new URL(value);
@@ -345,6 +437,14 @@ function httpUrl(value: string, label: string): string {
   } catch {
     throw new Error(`${label} must be an http(s) URL`);
   }
+}
+
+function parseRpcUrls(raw: string): string[] {
+  const urls = raw.split(",").map((value, index) => httpUrl(value.trim(), `RPC_URLS[${index}]`));
+  if (urls.length === 0 || new Set(urls).size !== urls.length) {
+    throw new Error("RPC_URLS requires distinct endpoints");
+  }
+  return urls;
 }
 
 function optionalPrivateKey(value: string | undefined): string | undefined {
