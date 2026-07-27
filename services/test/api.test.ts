@@ -70,7 +70,22 @@ async function signedBody(order: Order) {
 
 describe("orderbook API", () => {
   const store = new MemoryStore();
-  const api = buildApi({ config, store });
+  const quote = {
+    adapterId: 1,
+    venue: "LFJ",
+    amountOut: 40n * 10n ** 6n,
+    extra: "0x",
+    quotedAtMs: 1_700_000_000_000,
+  };
+  const quoter = {
+    quoteBest: async () => quote,
+    quoteAll: async () => [
+      quote,
+      { ...quote, adapterId: 2, venue: "Blackhole", amountOut: 39n * 10n ** 6n },
+    ],
+  };
+  const api = buildApi({ config, store, quoter });
+  let firstOrderHash = "";
 
   beforeAll(async () => {
     await api.ready();
@@ -84,10 +99,21 @@ describe("orderbook API", () => {
     const res = await api.inject({ method: "POST", url: "/orders", payload: await signedBody(order) });
     expect(res.statusCode).toBe(200);
     const { orderHash } = res.json();
+    firstOrderHash = orderHash;
 
     const list = await api.inject({ method: "GET", url: `/orders?maker=${wallet.address}` });
     expect(list.statusCode).toBe(200);
-    expect(list.json().some((o: { orderHash: string }) => o.orderHash === orderHash)).toBe(true);
+    const record = list.json().find((o: { orderHash: string }) => o.orderHash === orderHash);
+    expect(record).toMatchObject({
+      orderHash,
+      chainId: 43113,
+      pair: "WAVAX-USDC",
+      side: "sell",
+      price: "40.000000",
+      baseAmount: "10",
+      softCancelled: false,
+      status: "resting",
+    });
   });
 
   it("rejects a signature that does not recover to the maker", async () => {
@@ -139,10 +165,58 @@ describe("orderbook API", () => {
   });
 
   it("orderbook depth splits asks and bids", async () => {
-    const res = await api.inject({ method: "GET", url: `/orderbook/${WAVAX},${USDC}` });
+    const res = await api.inject({ method: "GET", url: "/orderbook/WAVAX-USDC" });
     expect(res.statusCode).toBe(200);
     const book = res.json();
+    expect(book.pair).toBe("WAVAX-USDC");
+    expect(book.ts).toEqual(expect.any(Number));
+    expect(book.asks[0]).toMatchObject({ price: 40, size: 10, total: 10 });
     expect(book.asks.length).toBeGreaterThan(0);
+  });
+
+  it("serves executable quotes, persisted history and protocol stats", async () => {
+    const live = await api.inject({ method: "GET", url: "/quote/WAVAX-USDC" });
+    expect(live.statusCode).toBe(200);
+    expect(live.json()).toMatchObject({
+      pair: "WAVAX-USDC",
+      price: 40,
+      venue: "LFJ",
+      venues: [
+        { name: "LFJ", price: 40 },
+        { name: "Blackhole", price: 39 },
+      ],
+      ts: quote.quotedAtMs,
+    });
+
+    const history = await api.inject({
+      method: "GET",
+      url: `/quote-history/WAVAX-USDC?from=${quote.quotedAtMs - 1}`,
+    });
+    expect(history.json()).toEqual([{ t: quote.quotedAtMs, price: 40 }]);
+
+    const stats = await api.inject({ method: "GET", url: "/stats" });
+    expect(stats.json()).toMatchObject({
+      totalVolumeQuote: "0.0",
+      ordersFilled: 0,
+      ordersResting: expect.any(Number),
+      avgImprovementBps: null,
+      p2pMatchRateBps: null,
+    });
+  });
+
+  it("speaks the frontend subscription protocol and sends a book snapshot", async () => {
+    const ws = await api.injectWS("/stream");
+    const message = new Promise<Record<string, unknown>>((resolve) => {
+      ws.once("message", (payload: unknown) => resolve(JSON.parse(String(payload)) as Record<string, unknown>));
+    });
+    ws.send(JSON.stringify({ type: "subscribe", channel: "book:WAVAX-USDC" }));
+    await expect(message).resolves.toMatchObject({
+      v: 1,
+      type: "book.snapshot",
+      pair: "WAVAX-USDC",
+      seq: expect.any(Number),
+    });
+    ws.close();
   });
 
   it("soft-cancel flips status", async () => {
@@ -165,5 +239,27 @@ describe("orderbook API", () => {
     const res = await api.inject({ method: "POST", url: "/orders", payload: await signedBody(order) });
     const del = await api.inject({ method: "DELETE", url: `/orders/${res.json().orderHash}` });
     expect(del.statusCode).toBe(401);
+  });
+
+  it("reconciles an invalidated Permit2 nonce immediately", async () => {
+    const reconcileApi = buildApi({
+      config,
+      store,
+      chain: {
+        epochOf: async () => 0n,
+        balanceOf: async () => 2n ** 255n,
+        permit2Allowance: async () => 2n ** 255n,
+        isTokenAllowed: async () => true,
+        isNonceInvalidated: async () => true,
+      },
+    });
+    await reconcileApi.ready();
+    const response = await reconcileApi.inject({
+      method: "POST",
+      url: `/orders/${firstOrderHash}/reconcile`,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().status).toBe("cancelled");
+    await reconcileApi.close();
   });
 });

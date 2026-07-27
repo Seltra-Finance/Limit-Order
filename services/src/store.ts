@@ -10,6 +10,8 @@ export interface Store {
   /** Returns true only when a new event-backed fill was inserted. */
   insertFill(fill: Fill): Promise<boolean>;
   listFills(orderHash?: string): Promise<Fill[]>;
+  insertQuotePoint(pair: string, timestampMs: number, price: number): Promise<void>;
+  listQuotePoints(pair: string, fromMs: number): Promise<{ t: number; price: number }[]>;
   getEpoch(maker: string): Promise<bigint>;
   setEpoch(maker: string, epoch: bigint): Promise<void>;
   getIndexerCheckpoint(key: string): Promise<number | undefined>;
@@ -20,6 +22,7 @@ export interface Store {
 export class MemoryStore implements Store {
   private orders = new Map<string, StoredOrder>();
   private fills: Fill[] = [];
+  private quotePoints = new Map<string, { t: number; price: number }[]>();
   private epochs = new Map<string, bigint>();
   private checkpoints = new Map<string, number>();
 
@@ -70,6 +73,19 @@ export class MemoryStore implements Store {
 
   async listFills(orderHash?: string): Promise<Fill[]> {
     return orderHash ? this.fills.filter((f) => f.orderHash === orderHash) : [...this.fills];
+  }
+
+  async insertQuotePoint(pair: string, timestampMs: number, price: number): Promise<void> {
+    const points = this.quotePoints.get(pair) ?? [];
+    const existing = points.findIndex((point) => point.t === timestampMs);
+    if (existing >= 0) points[existing] = { t: timestampMs, price };
+    else points.push({ t: timestampMs, price });
+    points.sort((a, b) => a.t - b.t);
+    this.quotePoints.set(pair, points);
+  }
+
+  async listQuotePoints(pair: string, fromMs: number): Promise<{ t: number; price: number }[]> {
+    return (this.quotePoints.get(pair) ?? []).filter((point) => point.t >= fromMs);
   }
 
   async getEpoch(maker: string): Promise<bigint> {

@@ -139,6 +139,26 @@ export class PgStore implements Store {
     }));
   }
 
+  async insertQuotePoint(pair: string, timestampMs: number, price: number): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO quote_points (pair, timestamp_ms, price)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (pair, timestamp_ms) DO UPDATE SET price = EXCLUDED.price`,
+      [pair, timestampMs, price],
+    );
+  }
+
+  async listQuotePoints(pair: string, fromMs: number): Promise<{ t: number; price: number }[]> {
+    const result = await this.pool.query(
+      `SELECT timestamp_ms, price
+       FROM quote_points
+       WHERE pair = $1 AND timestamp_ms >= $2
+       ORDER BY timestamp_ms`,
+      [pair, fromMs],
+    );
+    return result.rows.map((row) => ({ t: Number(row.timestamp_ms), price: Number(row.price) }));
+  }
+
   async getEpoch(maker: string): Promise<bigint> {
     const res = await this.pool.query("SELECT epoch FROM maker_epochs WHERE LOWER(maker) = $1", [
       maker.toLowerCase(),
