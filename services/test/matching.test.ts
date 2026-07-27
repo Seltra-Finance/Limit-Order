@@ -91,8 +91,8 @@ describe("MatchingEngine", () => {
 
     const a = stored({ makingAmount: 10n * 10n ** 18n, takingAmount: 400n * 10n ** 6n }, true);
     const b = stored({ makingAmount: 405n * 10n ** 6n, takingAmount: 10n * 10n ** 18n }, false);
-    engine.add(a);
-    engine.add(b);
+    expect(engine.add(a)).toBe(false);
+    expect(engine.add(b)).toBe(true);
 
     expect(matches).toHaveLength(1);
     expect(matches[0].a.orderHash).toBe(a.orderHash);

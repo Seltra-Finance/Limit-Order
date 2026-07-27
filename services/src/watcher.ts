@@ -36,23 +36,32 @@ export class PriceWatcher {
 
   async tick(): Promise<void> {
     const resting = await this.store.listOrders({ status: "resting" });
-    const now = BigInt(Math.floor(Date.now() / 1000));
     for (const o of resting) {
-      if (o.order.expiry <= now) {
-        await this.store.setStatus(o.orderHash, "expired");
-        continue;
-      }
-      try {
-        const quote = await this.quoter.quoteBest(
-          o.order.makerAsset,
-          o.order.takerAsset,
-          o.order.makingAmount,
-        );
-        if (quote.amountOut >= o.order.takingAmount) this.onFillable(o, quote);
-      } catch {
-        // No enabled route/liquidity for this pair; the
-        // order can still settle P2P.
-      }
+      await this.checkOrder(o);
+    }
+  }
+
+  /**
+   * Evaluate one newly accepted order immediately instead of waiting for the
+   * next polling tick. The recurring tick remains the retry path for orders
+   * that become executable later.
+   */
+  async checkOrder(order: StoredOrder): Promise<void> {
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    if (order.order.expiry <= now) {
+      await this.store.setStatus(order.orderHash, "expired");
+      return;
+    }
+    try {
+      const quote = await this.quoter.quoteBest(
+        order.order.makerAsset,
+        order.order.takerAsset,
+        order.order.makingAmount,
+      );
+      if (quote.amountOut >= order.order.takingAmount) this.onFillable(order, quote);
+    } catch {
+      // No enabled route/liquidity for this pair; the order can still settle
+      // P2P or be retried by a later polling tick.
     }
   }
 }
