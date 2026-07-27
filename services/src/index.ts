@@ -1,6 +1,6 @@
 import { Contract } from "ethers";
 
-import { ERC20_ABI, SETTLEMENT_ABI } from "./abi.js";
+import { ERC20_ABI, PERMIT2_ABI, SETTLEMENT_ABI } from "./abi.js";
 import { buildApi } from "./api.js";
 import { loadConfig } from "./config.js";
 import { Indexer } from "./indexer.js";
@@ -12,6 +12,8 @@ import { PgStore } from "./pgStore.js";
 import { PriceWatcher } from "./watcher.js";
 import { preflightRuntime } from "./preflight.js";
 import { createRpcProvider } from "./rpc.js";
+import { nonceToInvalidation } from "./permit2.js";
+import { VenueQuoteCoordinator } from "./venues.js";
 
 /** Boots the full off-chain stack: orderbook API + matching engine + price
  *  watcher + keeper + indexer, wired together (revised spec 1.7-1.9). */
@@ -21,6 +23,8 @@ async function main(): Promise<void> {
   await preflightRuntime(config, provider);
   const store = config.databaseUrl ? new PgStore(config.databaseUrl) : new MemoryStore();
   const settlement = new Contract(config.settlement, SETTLEMENT_ABI, provider);
+  const permit2 = new Contract(config.permit2, PERMIT2_ABI, provider);
+  const venueQuoter = new VenueQuoteCoordinator(config, provider);
 
   const monitor = new SeltraMonitor(config, provider);
 
@@ -50,6 +54,7 @@ async function main(): Promise<void> {
   const api = buildApi({
     config,
     store,
+    quoter: venueQuoter,
     onNewOrder: keeper ? (o) => engine.add(o) : undefined,
     chain: {
       epochOf: async (maker) => BigInt(await settlement.currentEpoch(maker)),
@@ -57,12 +62,28 @@ async function main(): Promise<void> {
       permit2Allowance: async (token, owner) =>
         BigInt(await new Contract(token, ERC20_ABI, provider).allowance(owner, config.permit2)),
       isTokenAllowed: async (token) => Boolean(await settlement.allowedTokens(token)),
+      isNonceInvalidated: async (owner, nonce) => {
+        const { wordPos, mask } = nonceToInvalidation(nonce);
+        const bitmap = BigInt(await permit2.nonceBitmap(owner, wordPos));
+        return (bitmap & mask) !== 0n;
+      },
+      blockTimestamp: async (blockNumber) => {
+        const block = await provider.getBlock(blockNumber);
+        if (!block) throw new Error(`block ${blockNumber} is unavailable`);
+        return block.timestamp;
+      },
     },
   });
 
-  const watcher = new PriceWatcher(config, provider, store, (order, quote) => {
-    if (keeper) void keeper.tryFillDEX(order, quote);
-  });
+  const watcher = new PriceWatcher(
+    config,
+    provider,
+    store,
+    (order, quote) => {
+      if (keeper) void keeper.tryFillDEX(order, quote);
+    },
+    venueQuoter,
+  );
 
   const indexer = new Indexer(config, provider, store, {
     onFill: (orderHash) => {

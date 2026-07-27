@@ -56,3 +56,13 @@ CREATE TABLE IF NOT EXISTS indexer_state (
     block_number BIGINT NOT NULL CHECK (block_number >= 0),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS quote_points (
+    pair         TEXT NOT NULL,
+    timestamp_ms BIGINT NOT NULL CHECK (timestamp_ms >= 0),
+    price        DOUBLE PRECISION NOT NULL CHECK (price > 0),
+    PRIMARY KEY (pair, timestamp_ms)
+);
+
+CREATE INDEX IF NOT EXISTS idx_quote_points_pair_time
+    ON quote_points (pair, timestamp_ms DESC);

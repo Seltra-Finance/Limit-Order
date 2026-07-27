@@ -20,6 +20,10 @@ export interface BestVenueQuoter {
   quoteBest(tokenIn: string, tokenOut: string, amountIn: bigint): Promise<DexQuote>;
 }
 
+export interface VenueQuoter extends BestVenueQuoter {
+  quoteAll(tokenIn: string, tokenOut: string, amountIn: bigint): Promise<DexQuote[]>;
+}
+
 /**
  * Builds venue-specific route calldata, then quotes through Seltra's deployed
  * router. The quote that wins is therefore the exact adapter + extra tuple the
@@ -39,6 +43,11 @@ export class VenueQuoteCoordinator implements BestVenueQuoter {
   }
 
   async quoteBest(tokenIn: string, tokenOut: string, amountIn: bigint): Promise<DexQuote> {
+    const quotes = await this.quoteAll(tokenIn, tokenOut, amountIn);
+    return quotes.reduce((best, quote) => (quote.amountOut > best.amountOut ? quote : best));
+  }
+
+  async quoteAll(tokenIn: string, tokenOut: string, amountIn: bigint): Promise<DexQuote[]> {
     if (amountIn <= 0n) throw new Error("quote amount must be positive");
     const pairName = findPairName(this.config.pairs, tokenIn, tokenOut);
     if (!pairName) throw new Error("pair is not in the configured registry");
@@ -50,7 +59,7 @@ export class VenueQuoteCoordinator implements BestVenueQuoter {
       .filter((result): result is PromiseFulfilledResult<DexQuote> => result.status === "fulfilled")
       .map((result) => result.value);
     if (quotes.length === 0) throw new Error(`no executable venue quote for ${pairName}`);
-    return quotes.reduce((best, quote) => (quote.amountOut > best.amountOut ? quote : best));
+    return quotes;
   }
 
   private async quoteVenue(
