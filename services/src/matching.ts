@@ -56,10 +56,10 @@ export class MatchingEngine {
   constructor(private readonly onMatch: (m: Match) => void) {}
 
   /** Add or refresh a resting order and try to match it. */
-  add(order: StoredOrder): void {
-    if (order.status !== "resting") return;
+  add(order: StoredOrder): boolean {
+    if (order.status !== "resting") return false;
     this.resting.set(order.orderHash, order);
-    this.evaluate(order);
+    return this.evaluate(order);
   }
 
   remove(orderHash: string): void {
@@ -87,8 +87,8 @@ export class MatchingEngine {
 
   /** Scan the opposite side for the best crossing counterparty. "Best" is the
    *  largest quote-token surplus; ties broken by earliest submission. */
-  private evaluate(incoming: StoredOrder): void {
-    if (this.inFlight.has(incoming.orderHash)) return;
+  private evaluate(incoming: StoredOrder): boolean {
+    if (this.inFlight.has(incoming.orderHash)) return false;
 
     let best: { counter: StoredOrder; surplus: bigint } | undefined;
     for (const candidate of this.resting.values()) {
@@ -105,12 +105,13 @@ export class MatchingEngine {
         best = { counter: candidate, surplus };
       }
     }
-    if (!best) return;
+    if (!best) return false;
 
     const oriented = this.orient(incoming, best.counter)!;
     this.inFlight.add(incoming.orderHash);
     this.inFlight.add(best.counter.orderHash);
     this.onMatch({ a: oriented.a, b: oriented.b, surplus: best.surplus });
+    return true;
   }
 
   /**

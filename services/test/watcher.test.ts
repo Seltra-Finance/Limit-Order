@@ -96,6 +96,14 @@ describe("PriceWatcher executable venue quotes", () => {
     expect(onFillable).toHaveBeenCalledWith(order, quote);
   });
 
+  it("evaluates a newly submitted order without waiting for a polling tick", async () => {
+    const { watcher, onFillable, quoteBest } = setup(quote);
+    const order = storedOrder();
+    await watcher.checkOrder(order);
+    expect(quoteBest).toHaveBeenCalledWith(order.order.makerAsset, order.order.takerAsset, 10n);
+    expect(onFillable).toHaveBeenCalledWith(order, quote);
+  });
+
   it("still expires orders when venues are unavailable", async () => {
     const { store, watcher } = setup(new Error("paused"));
     const order = storedOrder(1n);

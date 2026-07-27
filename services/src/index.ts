@@ -51,11 +51,30 @@ async function main(): Promise<void> {
     });
   });
 
+  const watcher = new PriceWatcher(
+    config,
+    provider,
+    store,
+    (order, quote) => {
+      if (keeper) void keeper.tryFillDEX(order, quote);
+    },
+    venueQuoter,
+  );
+
   const api = buildApi({
     config,
     store,
     quoter: venueQuoter,
-    onNewOrder: keeper ? (o) => engine.add(o) : undefined,
+    onNewOrder: keeper
+      ? (order) => {
+          const matchedP2P = engine.add(order);
+          if (!matchedP2P) {
+            void watcher.checkOrder(order).catch((error: unknown) => {
+              console.log("immediate order evaluation failed", order.orderHash, String(error).slice(0, 120));
+            });
+          }
+        }
+      : undefined,
     chain: {
       epochOf: async (maker) => BigInt(await settlement.currentEpoch(maker)),
       balanceOf: async (token, owner) => BigInt(await new Contract(token, ERC20_ABI, provider).balanceOf(owner)),
@@ -74,16 +93,6 @@ async function main(): Promise<void> {
       },
     },
   });
-
-  const watcher = new PriceWatcher(
-    config,
-    provider,
-    store,
-    (order, quote) => {
-      if (keeper) void keeper.tryFillDEX(order, quote);
-    },
-    venueQuoter,
-  );
 
   const indexer = new Indexer(config, provider, store, {
     onFill: (orderHash) => {
