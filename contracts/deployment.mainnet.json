@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "network": "Avalanche C-Chain",
+  "chainId": 43114,
+  "deployedCommit": "b54a090e8f29b2de945f4233361e8972f8ef43b7",
+  "releaseTag": "seltra-contracts-mainnet-v1.0.0",
+  "deploymentBlock": 91024582,
+  "indexerStartBlock": 91024582,
+  "governanceComplete": true,
+  "deployer": "0xDfE9C76D2dd967cf7abFC376E38A186D67340968",
+  "guardian": "0xDfE9C76D2dd967cf7abFC376E38A186D67340968",
+  "treasury": "0xDfE9C76D2dd967cf7abFC376E38A186D67340968",
+  "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+  "economics": {
+    "makerSurplusBps": 7000,
+    "keeperSurplusBps": 3000,
+    "protocolFeeBps": 0
+  },
+  "timelock": {
+    "address": "0x2E5F8ba983dbCE1AAF396a8F6E023e9482ce9359",
+    "minDelaySeconds": 172800,
+    "selfAdmin": true,
+    "bootstrapEoaGovernance": true,
+    "deploymentTransaction": "0x19ddc6f7bb86fae7857ab19eda7324705e238b4811f4c1e82236eaa8d75c5659",
+    "deploymentBlock": 91024251,
+    "constructorArguments": [
+      172800,
+      [
+        "0xDfE9C76D2dd967cf7abFC376E38A186D67340968"
+      ],
+      [
+        "0xDfE9C76D2dd967cf7abFC376E38A186D67340968"
+      ],
+      "0x0000000000000000000000000000000000000000"
+    ]
+  },
+  "contracts": {
+    "router": {
+      "name": "SeltraAggregationRouter",
+      "address": "0x6e97Ec1E64cB059F30De68a87f383a0C8F8670d3",
+      "deploymentTransaction": "0x648a200caf5ca64bb9472879be46cccf35002139e2420b3fefb9ad8d22311d8e",
+      "deploymentBlock": 91024592,
+      "constructorArguments": [
+        "0xDfE9C76D2dd967cf7abFC376E38A186D67340968",
+        "0xDfE9C76D2dd967cf7abFC376E38A186D67340968"
+      ]
+    },
+    "settlement": {
+      "name": "SeltraSettlement",
+      "address": "0xbBdbb1785dB447CB04f7B2E0549b630eA7295d57",
+      "deploymentTransaction": "0x60d6751d643399386548b30c1b405f048d0217e612a39491ba2e175c48aa497a",
+      "deploymentBlock": 91024594,
+      "constructorArguments": [
+        "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+        "0x6e97Ec1E64cB059F30De68a87f383a0C8F8670d3",
+        "0xDfE9C76D2dd967cf7abFC376E38A186D67340968",
+        "0xDfE9C76D2dd967cf7abFC376E38A186D67340968"
+      ]
+    },
+    "lfjAdapter": {
+      "name": "LFJLBAdapter",
+      "adapterId": 1,
+      "address": "0x5fbbb45aC3BEDe19069decAa8012376064eC8351",
+      "deploymentTransaction": "0x76deb70cdb9f82b5e3d99443f97348c4ab38186c7eeed640175fd836b827f541",
+      "deploymentBlock": 91024598,
+      "constructorArguments": [
+        "0x6e97Ec1E64cB059F30De68a87f383a0C8F8670d3",
+        "0x18556DA13313f3532c54711497A8FedAC273220E",
+        "0x9A550a522BBaDFB69019b0432800Ed17855A51C3"
+      ]
+    },
+    "blackholeAdapter": {
+      "name": "BlackholeAdapter",
+      "adapterId": 2,
+      "address": "0xC4952bD555f979993b7BAB800d933dC2F082836d",
+      "deploymentTransaction": "0x716d7a1bc9767e3d23c292235eb5808cc90b5b62c9d838bafa34669bc6108644",
+      "deploymentBlock": 91024603,
+      "constructorArguments": [
+        "0x6e97Ec1E64cB059F30De68a87f383a0C8F8670d3",
+        "0xe946A9f39312E2346BA79DAb865B0e9A74f2F981",
+        "0x53D569BC4B37ADbBDB6ab447D92ADf42514AE480",
+        "0xDfE9C76D2dd967cf7abFC376E38A186D67340968"
+      ]
+    },
+    "pharaohAdapter": {
+      "name": "PharaohAdapter",
+      "adapterId": 3,
+      "address": "0xf7CeB84F59BF04D65801A479f4C91E217F451AA3",
+      "deploymentTransaction": "0x4ae67af6b9970dadb4d2cc3f628211fe8bcc5a16601d097ec0a18802c22b290c",
+      "deploymentBlock": 91024627,
+      "constructorArguments": [
+        "0x6e97Ec1E64cB059F30De68a87f383a0C8F8670d3",
+        "0xc8B8fCbDb5C019D7802fFb0b39603395D7d3915c",
+        "0xB7297301b7CC659BB96D51754643A0Df6eEA2138"
+      ]
+    }
+  },
+  "allowedPairs": [
+    "WAVAX/USDC",
+    "WETH.e/WAVAX",
+    "BTC.b/WAVAX",
+    "USDC/USDt"
+  ],
+  "governance": {
+    "scheduleTransactions": [
+      "0xb7fb37ce814a700d86735760b1dbef2328645555b565bc134ed693ca9c3d999a",
+      "0x8b0c1389e1d195b11d235fa716e1d9d71d27b8916174e376760b7d7067015718",
+      "0x2e0a46293bcbef0aa940582ea511bdbb1ccc9a33e149fb11a6a8c7848595b4d7"
+    ],
+    "acceptanceTransactions": [
+      "0x6d69c3bca259da2dcc09884758079c55d3240eff50e9e24c06b3bb68dc61d120",
+      "0xb366867a03c18fd1b46fb565cc1391f4ef944cddcacbcab4e1d343ecbf1b022f",
+      "0x4b72953b4f48f3f4e552b6f3c732cdb52660d047ef3ba69e735d5a5f9cacb022"
+    ],
+    "operationIds": {
+      "settlement": "0xec5b5eb186d7550ef2f195fc9b107e7a6e26aaca7538e4b838d97d50644db450",
+      "router": "0xb8a476619867fe81228c2063ceb28fca862d9ee258cb708733f8c40fdad9f1d5",
+      "blackholeAdapter": "0x60f4c51b2eed0aca4baca6e2271566138408744c5b9c146916c9df5058b32a0b"
+    },
+    "finalOwner": "0x2E5F8ba983dbCE1AAF396a8F6E023e9482ce9359",
+    "pendingOwnersCleared": true
+  },
+  "sourceVerification": {
+    "provider": "Sourcify",
+    "verifiedOn": "2026-07-27",
+    "status": "exact_match",
+    "contracts": {
+      "timelock": {
+        "status": "already_verified"
+      },
+      "router": {
+        "status": "exact_match",
+        "jobId": "46d1b83a-e554-4c3b-9724-ba31c97dd0fa"
+      },
+      "settlement": {
+        "status": "exact_match",
+        "jobId": "5ee72fe9-af51-4481-be2e-778a0d408c37"
+      },
+      "lfjAdapter": {
+        "status": "exact_match",
+        "jobId": "2b32e544-96df-453a-8ec4-a7a192910f5e"
+      },
+      "blackholeAdapter": {
+        "status": "exact_match",
+        "jobId": "edc2c5c5-3e2a-44b9-8c89-a4322160a1f9"
+      },
+      "pharaohAdapter": {
+        "status": "exact_match",
+        "jobId": "24044d86-2f17-447c-9c81-61283cb9c068"
+      }
+    }
+  },
+  "securityReview": {
+    "almanaxScanId": "14e99257-5ed6-47c5-8b9b-62354a050916",
+    "almanaxStatus": "passed",
+    "almanaxActiveFindings": 0,
+    "independentAuditStatus": "pending"
+  }
+}

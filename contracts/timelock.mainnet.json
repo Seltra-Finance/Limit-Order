@@ -1,0 +1,8 @@
+{
+  "bootstrapEoaGovernance": true,
+  "chainId": 43114,
+  "executor": "0xDfE9C76D2dd967cf7abFC376E38A186D67340968",
+  "minDelay": 172800,
+  "proposer": "0xDfE9C76D2dd967cf7abFC376E38A186D67340968",
+  "timelock": "0x2E5F8ba983dbCE1AAF396a8F6E023e9482ce9359"
+}
