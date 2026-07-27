@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   AVALANCHE_MAINNET_CHAIN_ID,
-  LFJ_LB_QUOTER_V21,
+  LFJ_LB_QUOTER_V22,
   loadArbitrageConfig,
 } from "../src/arbConfig.js";
 
@@ -14,7 +14,7 @@ describe("loadArbitrageConfig", () => {
     const config = loadArbitrageConfig({});
     expect(config.mode).toBe("dry-run");
     expect(config.chainId).toBe(AVALANCHE_MAINNET_CHAIN_ID);
-    expect(config.lfjQuoter).toBe(LFJ_LB_QUOTER_V21);
+    expect(config.lfjQuoter).toBe(LFJ_LB_QUOTER_V22);
     expect(config.executorAddress).toBeUndefined();
     expect(config.operatorPrivateKey).toBeUndefined();
     expect(config.cycles).toHaveLength(1);

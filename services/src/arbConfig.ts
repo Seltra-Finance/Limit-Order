@@ -3,8 +3,8 @@ import { getAddress, parseUnits } from "ethers";
 export const AVALANCHE_MAINNET_CHAIN_ID = 43_114;
 export const WAVAX = "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7";
 export const USDC = "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E";
-export const LFJ_LB_ROUTER_V21 = "0xb4315e873dBcf96Ffd0acd8EA43f689D8c20fB30";
-export const LFJ_LB_QUOTER_V21 = "0xd76019A16606FDa4651f636D9751f500Ed776250";
+export const LFJ_LB_ROUTER_V22 = "0x18556DA13313f3532c54711497A8FedAC273220E";
+export const LFJ_LB_QUOTER_V22 = "0x9A550a522BBaDFB69019b0432800Ed17855A51C3";
 export const PHARAOH_SWAP_ROUTER = "0xc8B8fCbDb5C019D7802fFb0b39603395D7d3915c";
 export const PHARAOH_QUOTER_V2 = "0xB7297301b7CC659BB96D51754643A0Df6eEA2138";
 
@@ -103,8 +103,8 @@ export function loadArbitrageConfig(env: NodeJS.ProcessEnv = process.env): Arbit
     ),
     failurePauseMs: integer(env.ARB_FAILURE_PAUSE_MS ?? "60000", "ARB_FAILURE_PAUSE_MS", 1_000),
     wrappedNative: address(env.ARB_WRAPPED_NATIVE ?? WAVAX, "ARB_WRAPPED_NATIVE"),
-    lfjRouter: address(env.ARB_LFJ_ROUTER ?? LFJ_LB_ROUTER_V21, "ARB_LFJ_ROUTER"),
-    lfjQuoter: address(env.ARB_LFJ_QUOTER ?? LFJ_LB_QUOTER_V21, "ARB_LFJ_QUOTER"),
+    lfjRouter: address(env.ARB_LFJ_ROUTER ?? LFJ_LB_ROUTER_V22, "ARB_LFJ_ROUTER"),
+    lfjQuoter: address(env.ARB_LFJ_QUOTER ?? LFJ_LB_QUOTER_V22, "ARB_LFJ_QUOTER"),
     pharaohRouter: address(env.ARB_PHARAOH_ROUTER ?? PHARAOH_SWAP_ROUTER, "ARB_PHARAOH_ROUTER"),
     pharaohQuoter: address(env.ARB_PHARAOH_QUOTER ?? PHARAOH_QUOTER_V2, "ARB_PHARAOH_QUOTER"),
     pharaohTickSpacing: integer(env.ARB_PHARAOH_TICK_SPACING ?? "10", "ARB_PHARAOH_TICK_SPACING", 1, 8_388_607),

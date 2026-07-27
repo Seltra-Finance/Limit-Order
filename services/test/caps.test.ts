@@ -50,4 +50,14 @@ describe("NotionalCaps (rollout, spec 2.4)", () => {
     expect(caps.allows(USDC, 400n, t0)).toBe(false); // daily (500+400 > 800)
     expect(caps.allows(USDC, 300n, t0)).toBe(true);
   });
+
+  it("applies native-unit limits per quote token", () => {
+    const caps = new NotionalCaps(0n, 0n, {
+      [USDC.toLowerCase()]: { perOrder: 5_000n * 10n ** 6n, daily: 50_000n * 10n ** 6n },
+      [USDT.toLowerCase()]: { perOrder: 500n * 10n ** 18n, daily: 5_000n * 10n ** 18n },
+    });
+    expect(caps.allows(USDC, 5_001n * 10n ** 6n)).toBe(false);
+    expect(caps.allows(USDT, 500n * 10n ** 18n)).toBe(true);
+    expect(caps.allows(USDT, 501n * 10n ** 18n)).toBe(false);
+  });
 });

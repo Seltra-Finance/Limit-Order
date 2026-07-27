@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import websocket from "@fastify/websocket";
 import { getAddress, isAddress, verifyMessage } from "ethers";
 
-import type { SeltraConfig } from "./config.js";
+import { quotePolicyFor, type SeltraConfig } from "./config.js";
 import type { Store } from "./store.js";
 import { orderFromJson, orderToJson, permitFromJson, permitToJson, type StoredOrder } from "./types.js";
 import { orderHash, recoverMaker } from "./permit2.js";
@@ -129,11 +129,12 @@ export function buildApi(deps: ApiDeps): FastifyInstance & { broadcast: (e: Stre
       if (Object.keys(config.pairs).length > 0 && !matchedPair) {
         return reply.code(400).send({ error: "pair not supported" });
       }
-      if (matchedPair && config.minOrderNotional > 0n) {
+      if (matchedPair) {
+        const policy = quotePolicyFor(config, matchedPair.quote);
         const quoteNotional = order.makerAsset.toLowerCase() === matchedPair.quote.toLowerCase()
           ? order.makingAmount
           : order.takingAmount;
-        if (quoteNotional < config.minOrderNotional) {
+        if (policy.minOrderNotional > 0n && quoteNotional < policy.minOrderNotional) {
           return reply.code(400).send({ error: "order is below minimum quote notional" });
         }
       }

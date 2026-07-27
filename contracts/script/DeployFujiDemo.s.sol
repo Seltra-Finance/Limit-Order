@@ -23,7 +23,7 @@ import {TestERC20} from "../test/utils/TestERC20.sol";
 ///     --rpc-url $FUJI_RPC_URL --broadcast
 contract DeployFujiDemo is Script {
     address constant CANONICAL_PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
-    address constant FUJI_LB_ROUTER = 0xb4315e873dBcf96Ffd0acd8EA43f689D8c20fB30;
+    address constant FUJI_LB_ROUTER = 0x18556DA13313f3532c54711497A8FedAC273220E;
     uint8 constant MOCK_ADAPTER_ID = 0;
     uint8 constant LFJ_ADAPTER_ID = 1;
 
@@ -46,9 +46,8 @@ contract DeployFujiDemo is Script {
         MockDEXAdapter mock = new MockDEXAdapter(address(router), deployer);
         router.addAdapter(MOCK_ADAPTER_ID, address(mock));
 
-        // Real LFJ adapter registered too (LBRouter v2.1 exists on Fuji).
-        // Note: the demo quoter address is mainnet-verified; Fuji quoting is
-        // best-effort and the demo fills route through the mock.
+        // Real LFJ adapter registered too (canonical V2.2 contracts share the
+        // documented Avalanche/Fuji addresses). Demo fills use the mock.
         if (FUJI_LB_ROUTER.code.length > 0) {
             address lbQuoter = vm.envOr("LFJ_LB_QUOTER", address(0));
             if (lbQuoter != address(0)) {
@@ -62,6 +61,7 @@ contract DeployFujiDemo is Script {
         TestERC20 quote = new TestERC20("Seltra Demo USDC", "sUSDC", 6);
         settlement.setTokenAllowed(address(base), true);
         settlement.setTokenAllowed(address(quote), true);
+        settlement.setPairAllowed(address(base), address(quote), true);
 
         // Mock market: 1 sWAVAX -> 41 sUSDC, with quote-side inventory.
         mock.setPrice(address(base), address(quote), 41e6);

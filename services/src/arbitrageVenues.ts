@@ -19,7 +19,7 @@ const PHARAOH_QUOTER_ABI = [
 
 const UINT128_MAX = (1n << 128n) - 1n;
 
-/** Direct LFJ V2.1 quote source that also constructs the exact adapter extra. */
+/** Direct LFJ V2.2 quote source that also constructs the exact adapter extra. */
 export class LfjArbitrageVenue implements ArbVenue {
   readonly adapterId = 1;
   readonly name = "LFJ";

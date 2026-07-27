@@ -1,4 +1,4 @@
-import { Contract, JsonRpcProvider } from "ethers";
+import { Contract } from "ethers";
 
 import { ERC20_ABI, SETTLEMENT_ABI } from "./abi.js";
 import { buildApi } from "./api.js";
@@ -11,12 +11,13 @@ import { MemoryStore } from "./store.js";
 import { PgStore } from "./pgStore.js";
 import { PriceWatcher } from "./watcher.js";
 import { preflightRuntime } from "./preflight.js";
+import { createRpcProvider } from "./rpc.js";
 
 /** Boots the full off-chain stack: orderbook API + matching engine + price
  *  watcher + keeper + indexer, wired together (revised spec 1.7-1.9). */
 async function main(): Promise<void> {
   const config = loadConfig();
-  const provider = new JsonRpcProvider(config.rpcUrl, config.chainId);
+  const provider = createRpcProvider(config);
   await preflightRuntime(config, provider);
   const store = config.databaseUrl ? new PgStore(config.databaseUrl) : new MemoryStore();
   const settlement = new Contract(config.settlement, SETTLEMENT_ABI, provider);

@@ -278,6 +278,7 @@ contract InvariantsTest is Test {
         router.addAdapter(0, address(mock));
         settlement.setTokenAllowed(address(wavax), true);
         settlement.setTokenAllowed(address(usdc), true);
+        settlement.setPairAllowed(address(wavax), address(usdc), true);
         settlement.setSurplusParams(7_000, 500, treasury);
         vm.stopPrank();
 

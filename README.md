@@ -214,11 +214,11 @@ can still match P2P for zero slippage.
   the keeper inside `extra` and pins both path endpoints to the order.
 - Pharaoh `extra` is `abi.encode(uint256 deadline, int24 tickSpacing)`; the
   adapter rejects expired deadlines and forwards the keeper value unchanged.
-- The LFJ V2.1 fork tests use the currently documented Avalanche LBQuoter
-  `0xd76019A16606FDa4651f636D9751f500Ed776250` and LBRouter
-  `0xb4315e873dBcf96Ffd0acd8EA43f689D8c20fB30`.
+- The LFJ V2.2 fork tests use the official Avalanche LBQuoter
+  `0x9A550a522BBaDFB69019b0432800Ed17855A51C3` and LBRouter
+  `0x18556DA13313f3532c54711497A8FedAC273220E`.
 - Blackhole route authorization binds the pair, endpoints, stable flag, and
-  concentrated flag into one allowlist key. The two initial pool bindings are
+  concentrated flag into one allowlist key. All four launch-pool bindings are
   independently quoted and swap-tested on an Avalanche mainnet fork. Pharaoh quotes use its deployed non-view QuoterV2 through
   client-side `eth_call`/`staticCall`.
 - Goldsky subgraph manifests are not included; `services/src/indexer.ts` is the

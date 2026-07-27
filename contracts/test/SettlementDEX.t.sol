@@ -277,6 +277,7 @@ contract SettlementDEXTest is SeltraTestBase {
     function test_fill_feeOnTransferTakerAsset_revertsViaBalanceDelta() public {
         FeeOnTransferERC20 fee = new FeeOnTransferERC20(500); // 5% fee
         _allowToken(address(fee));
+        _allowPair(address(wavax), address(fee));
         fee.mint(address(mock), 1_000_000e18);
         vm.prank(owner);
         mock.setPrice(address(wavax), address(fee), 40e18); // exactly at limit pre-fee
@@ -296,6 +297,7 @@ contract SettlementDEXTest is SeltraTestBase {
     function test_fill_feeOnTransferTakerAsset_revertsOnNonExactPayout() public {
         FeeOnTransferERC20 fee = new FeeOnTransferERC20(500); // 5% fee
         _allowToken(address(fee));
+        _allowPair(address(wavax), address(fee));
         fee.mint(address(mock), 1_000_000e18);
         vm.prank(owner);
         mock.setPrice(address(wavax), address(fee), 50e18);

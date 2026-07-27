@@ -13,7 +13,7 @@ import {IBlackholeRouterV2} from "../../src/interfaces/external/IBlackholeRouter
 import {IBlackholeRouterHelper} from "../../src/interfaces/external/IBlackholeRouterHelper.sol";
 import {Order, OrderLib} from "../../src/libraries/OrderLib.sol";
 
-/// @notice Mainnet release gate for Blackhole's two launch pools. RouterV2
+/// @notice Mainnet release gate for Blackhole's four launch pools. RouterV2
 ///         addresses are sourced from Blackhole's current official app bundle
 ///         and verified on-chain. The suite is skipped unless
 ///         RUN_MAINNET_FORKS=true and then requires AVAX_RPC_URL.
@@ -21,11 +21,15 @@ contract BlackholeAdapterForkTest is Test {
     address constant WAVAX = 0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7;
     address constant USDC = 0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E;
     address constant USDT = 0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7;
+    address constant WETH_E = 0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB;
+    address constant BTC_B = 0x152b9d0FdC40C096757F570A51E494bd4b943E50;
     IBlackholeRouterV2 constant BH_ROUTER = IBlackholeRouterV2(0xe946A9f39312E2346BA79DAb865B0e9A74f2F981);
     IBlackholeRouterHelper constant BH_HELPER = IBlackholeRouterHelper(0x53D569BC4B37ADbBDB6ab447D92ADf42514AE480);
     ISignatureTransfer constant PERMIT2 = ISignatureTransfer(0x000000000022D473030F116dDEE9F6B43aC78BA3);
     address constant WAVAX_USDC_POOL = 0x41100C6D2c6920B10d12Cd8D59c8A9AA2eF56fC7;
     address constant USDC_USDT_POOL = 0x859592A4A469610E573f96Ef87A0e5565F9a94c8;
+    address constant WETH_WAVAX_POOL = 0x5E128EbC09C918DDAE3Ca1668d4EE9527dc00D78;
+    address constant BTCB_WAVAX_POOL = 0x8FEF4fE4970a5D6bFa7C65871a2EbFD0F42aa822;
     uint8 constant BLACKHOLE_ADAPTER_ID = 2;
 
     SeltraAggregationRouter internal router;
@@ -45,7 +49,7 @@ contract BlackholeAdapterForkTest is Test {
         }
         string memory url = vm.envOr("AVAX_RPC_URL", string(""));
         require(bytes(url).length != 0, "AVAX_RPC_URL required when RUN_MAINNET_FORKS=true");
-        vm.createSelectFork(url);
+        vm.createSelectFork(url, vm.envOr("AVAX_FORK_BLOCK", uint256(90_884_800)));
 
         owner = makeAddr("owner");
         maker = vm.addr(makerKey);
@@ -61,6 +65,12 @@ contract BlackholeAdapterForkTest is Test {
         settlement.setTokenAllowed(WAVAX, true);
         settlement.setTokenAllowed(USDC, true);
         settlement.setTokenAllowed(USDT, true);
+        settlement.setTokenAllowed(WETH_E, true);
+        settlement.setTokenAllowed(BTC_B, true);
+        settlement.setPairAllowed(WAVAX, USDC, true);
+        settlement.setPairAllowed(USDC, USDT, true);
+        settlement.setPairAllowed(WETH_E, WAVAX, true);
+        settlement.setPairAllowed(BTC_B, WAVAX, true);
         vm.stopPrank();
 
         deal(WAVAX, maker, 100e18);
@@ -242,6 +252,37 @@ contract BlackholeAdapterForkTest is Test {
         assertLt(usdt5000, 5_050e6, "USDt -> USDC 5000 above launch gate");
         assertApproxEqRel(usdc5000 / 50, usdc100, 0.005e18, "USDC -> USDt size impact over 50 bps");
         assertApproxEqRel(usdt5000 / 50, usdt100, 0.005e18, "USDt -> USDC size impact over 50 bps");
+    }
+
+    function test_fork_wethWavaxAndBtcbWavaxPinnedPoolsRoundTrip() public {
+        _assertPoolRoundTrip(WETH_WAVAX_POOL, WETH_E, WAVAX, 1e18);
+        _assertPoolRoundTrip(BTCB_WAVAX_POOL, BTC_B, WAVAX, 1e6); // 0.01 BTC.b
+    }
+
+    function _assertPoolRoundTrip(address routePool, address tokenIn, address tokenOut, uint256 amountIn) internal {
+        vm.startPrank(owner);
+        adapter.setRouteAllowed(routePool, tokenIn, tokenOut, false, true, true);
+        adapter.setRouteAllowed(routePool, tokenOut, tokenIn, false, true, true);
+        vm.stopPrank();
+
+        bytes memory forward = _routeAt(routePool, tokenIn, tokenOut);
+        uint256 quotedOut = router.quote(BLACKHOLE_ADAPTER_ID, tokenIn, tokenOut, amountIn, forward);
+        assertGt(quotedOut, 0, "priority-pair forward quote");
+
+        deal(tokenIn, settlementStub, amountIn);
+        vm.startPrank(settlementStub);
+        IERC20(tokenIn).approve(address(router), amountIn);
+        uint256 amountOut =
+            router.swap(BLACKHOLE_ADAPTER_ID, tokenIn, tokenOut, amountIn, (quotedOut * 97) / 100, forward);
+        bytes memory reverse = _routeAt(routePool, tokenOut, tokenIn);
+        uint256 reverseQuote = router.quote(BLACKHOLE_ADAPTER_ID, tokenOut, tokenIn, amountOut, reverse);
+        IERC20(tokenOut).approve(address(router), amountOut);
+        uint256 amountBack =
+            router.swap(BLACKHOLE_ADAPTER_ID, tokenOut, tokenIn, amountOut, (reverseQuote * 97) / 100, reverse);
+        vm.stopPrank();
+
+        assertGt(amountBack, 0, "priority-pair reverse swap");
+        assertEq(IERC20(tokenOut).balanceOf(address(router)), 0, "router output residue");
     }
 
     function test_fork_fullDEXFillUsdcToUsdt() public {

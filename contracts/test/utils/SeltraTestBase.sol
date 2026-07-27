@@ -61,6 +61,7 @@ contract SeltraTestBase is Test {
         usdc = new TestERC20("USD Coin", "USDC", 6);
         _allowToken(address(wavax));
         _allowToken(address(usdc));
+        _allowPair(address(wavax), address(usdc));
 
         // The maker's only approval, ever: ERC-20 -> canonical Permit2.
         _approvePermit2(maker);
@@ -70,6 +71,11 @@ contract SeltraTestBase is Test {
     function _allowToken(address token) internal {
         vm.prank(owner);
         settlement.setTokenAllowed(token, true);
+    }
+
+    function _allowPair(address tokenA, address tokenB) internal {
+        vm.prank(owner);
+        settlement.setPairAllowed(tokenA, tokenB, true);
     }
 
     function _approvePermit2(address who) internal {

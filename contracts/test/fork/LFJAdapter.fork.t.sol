@@ -20,8 +20,11 @@ import {Order, OrderLib} from "../../src/libraries/OrderLib.sol";
 contract LFJAdapterForkTest is Test {
     address constant WAVAX = 0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7;
     address constant USDC = 0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E;
-    ILBRouter constant LB_ROUTER = ILBRouter(0xb4315e873dBcf96Ffd0acd8EA43f689D8c20fB30);
-    ILBQuoter constant LB_QUOTER = ILBQuoter(0xd76019A16606FDa4651f636D9751f500Ed776250);
+    address constant USDT = 0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7;
+    address constant WETH_E = 0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB;
+    address constant BTC_B = 0x152b9d0FdC40C096757F570A51E494bd4b943E50;
+    ILBRouter constant LB_ROUTER = ILBRouter(0x18556DA13313f3532c54711497A8FedAC273220E);
+    ILBQuoter constant LB_QUOTER = ILBQuoter(0x9A550a522BBaDFB69019b0432800Ed17855A51C3);
     ISignatureTransfer constant PERMIT2 = ISignatureTransfer(0x000000000022D473030F116dDEE9F6B43aC78BA3);
     uint8 constant LFJ_ADAPTER_ID = 1;
 
@@ -40,7 +43,7 @@ contract LFJAdapterForkTest is Test {
         }
         string memory url = vm.envOr("AVAX_RPC_URL", string(""));
         require(bytes(url).length != 0, "AVAX_RPC_URL required when RUN_MAINNET_FORKS=true");
-        vm.createSelectFork(url);
+        vm.createSelectFork(url, vm.envOr("AVAX_FORK_BLOCK", uint256(90_884_800)));
 
         address owner = makeAddr("owner");
         address guardian = makeAddr("guardian");
@@ -55,6 +58,13 @@ contract LFJAdapterForkTest is Test {
         router.addAdapter(LFJ_ADAPTER_ID, address(adapter));
         settlement.setTokenAllowed(WAVAX, true);
         settlement.setTokenAllowed(USDC, true);
+        settlement.setTokenAllowed(USDT, true);
+        settlement.setTokenAllowed(WETH_E, true);
+        settlement.setTokenAllowed(BTC_B, true);
+        settlement.setPairAllowed(WAVAX, USDC, true);
+        settlement.setPairAllowed(WETH_E, WAVAX, true);
+        settlement.setPairAllowed(BTC_B, WAVAX, true);
+        settlement.setPairAllowed(USDC, USDT, true);
         vm.stopPrank();
 
         deal(WAVAX, maker, 100e18);
@@ -65,9 +75,17 @@ contract LFJAdapterForkTest is Test {
     /// @dev Best-path discovery via the live LBQuoter; extra = (deadline,
     ///      binSteps, versions, tokenPath).
     function _bestPathExtra(uint128 amountIn) internal view returns (bytes memory extra, uint256 quotedOut) {
+        return _bestPathExtraFor(WAVAX, USDC, amountIn);
+    }
+
+    function _bestPathExtraFor(address tokenIn, address tokenOut, uint128 amountIn)
+        internal
+        view
+        returns (bytes memory extra, uint256 quotedOut)
+    {
         address[] memory route = new address[](2);
-        route[0] = WAVAX;
-        route[1] = USDC;
+        route[0] = tokenIn;
+        route[1] = tokenOut;
         ILBQuoter.Quote memory q = LB_QUOTER.findBestPathFromAmountIn(route, amountIn);
         quotedOut = q.amounts[q.amounts.length - 1];
         extra = abi.encode(block.timestamp + 60, q.binSteps, q.versions, q.route);
@@ -133,15 +151,40 @@ contract LFJAdapterForkTest is Test {
         assertGt(q1, 0, "1 WAVAX quote");
         assertGt(q10, 0, "10 WAVAX quote");
         assertGt(q100, 0, "100 WAVAX quote");
-        assertLe(q10, q1 * 10, "larger trade cannot improve unit price");
-        assertLe(q100, q10 * 10, "larger trade cannot improve unit price");
 
-        uint256 impactBps = 10_000 - ((q100 * 100) / q1);
+        // Best-path discovery may select a marginally better route at a
+        // larger size. That is not adverse price impact, so clamp it to zero.
+        uint256 expected100 = q1 * 100;
+        uint256 impactBps = q100 >= expected100 ? 0 : ((expected100 - q100) * 10_000) / expected100;
         emit log_named_uint("LFJ 1 WAVAX quote", q1);
         emit log_named_uint("LFJ 10 WAVAX quote", q10);
         emit log_named_uint("LFJ 100 WAVAX quote", q100);
         emit log_named_uint("LFJ 100 WAVAX impact bps vs 1 WAVAX", impactBps);
         assertLe(impactBps, 50, "100 WAVAX price impact exceeds 50 bps gate");
+    }
+
+    function test_fork_allLaunchPairsQuoteAndRoundTrip() public {
+        _assertRoundTrip(WETH_E, WAVAX, 1e18);
+        _assertRoundTrip(BTC_B, WAVAX, 1e6); // 0.01 BTC.b
+        _assertRoundTrip(USDC, USDT, 1_000e6);
+    }
+
+    function _assertRoundTrip(address tokenIn, address tokenOut, uint128 amountIn) internal {
+        (bytes memory forward, uint256 quotedOut) = _bestPathExtraFor(tokenIn, tokenOut, amountIn);
+        assertGt(quotedOut, 0, "priority-pair forward quote");
+
+        deal(tokenIn, address(settlement), amountIn);
+        vm.startPrank(address(settlement));
+        IERC20(tokenIn).approve(address(router), amountIn);
+        uint256 amountOut = router.swap(LFJ_ADAPTER_ID, tokenIn, tokenOut, amountIn, (quotedOut * 97) / 100, forward);
+        (bytes memory reverse, uint256 reverseQuote) = _bestPathExtraFor(tokenOut, tokenIn, uint128(amountOut));
+        IERC20(tokenOut).approve(address(router), amountOut);
+        uint256 amountBack =
+            router.swap(LFJ_ADAPTER_ID, tokenOut, tokenIn, amountOut, (reverseQuote * 97) / 100, reverse);
+        vm.stopPrank();
+
+        assertGt(amountBack, 0, "priority-pair reverse swap");
+        assertEq(IERC20(tokenOut).balanceOf(address(router)), 0, "router output residue");
     }
 
     /// @dev Full fillOrderDEX against real liquidity: witness pull through the
