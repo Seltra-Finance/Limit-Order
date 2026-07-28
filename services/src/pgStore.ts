@@ -159,6 +159,50 @@ export class PgStore implements Store {
     return result.rows.map((row) => ({ t: Number(row.timestamp_ms), price: Number(row.price) }));
   }
 
+  async insertVenueQuotePoints(
+    pair: string,
+    timestampMs: number,
+    points: { name: string; price: number }[],
+  ): Promise<void> {
+    if (points.length === 0) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const point of points) {
+        await client.query(
+          `INSERT INTO venue_quote_points (pair, venue, timestamp_ms, price)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (pair, venue, timestamp_ms) DO UPDATE SET price = EXCLUDED.price`,
+          [pair, point.name, timestampMs, point.price],
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listVenueQuotePoints(
+    pair: string,
+    fromMs: number,
+  ): Promise<{ t: number; name: string; price: number }[]> {
+    const result = await this.pool.query(
+      `SELECT timestamp_ms, venue, price
+       FROM venue_quote_points
+       WHERE pair = $1 AND timestamp_ms >= $2
+       ORDER BY timestamp_ms, venue`,
+      [pair, fromMs],
+    );
+    return result.rows.map((row) => ({
+      t: Number(row.timestamp_ms),
+      name: String(row.venue),
+      price: Number(row.price),
+    }));
+  }
+
   async getEpoch(maker: string): Promise<bigint> {
     const res = await this.pool.query("SELECT epoch FROM maker_epochs WHERE LOWER(maker) = $1", [
       maker.toLowerCase(),

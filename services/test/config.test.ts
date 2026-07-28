@@ -27,6 +27,7 @@ const VENUES = JSON.stringify([
     name: "LFJ",
     adapterId: 1,
     quoter: MAINNET_LFJ_QUOTER,
+    excludedPairs: ["BTC.b/WAVAX"],
   },
   {
     kind: "blackhole",
@@ -103,6 +104,14 @@ describe("mainnet service configuration", () => {
       "0x0000000000000000000000000000000000000099",
     );
     expect(() => loadConfig(env)).toThrow(/Blackhole USDC\/USDt/);
+  });
+
+  it("requires LFJ to exclude the low-depth BTC.b route", () => {
+    const env = mainnetEnv();
+    const venues = JSON.parse(VENUES);
+    delete venues[0].excludedPairs;
+    env.DEX_VENUES = JSON.stringify(venues);
+    expect(() => loadConfig(env)).toThrow(/LFJ must exclude/);
   });
 
   it("requires quote-token-native policies for every mainnet quote asset", () => {

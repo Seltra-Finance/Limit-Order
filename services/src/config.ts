@@ -34,6 +34,8 @@ export interface QuotePolicy {
 interface DexVenueBase {
   adapterId: number;
   name: string;
+  /** Pair names deliberately unavailable on this venue. */
+  excludedPairs?: string[];
 }
 
 export interface MockVenueConfig extends DexVenueBase {
@@ -220,8 +222,17 @@ function validateMainnet(config: SeltraConfig, env: NodeJS.ProcessEnv): void {
   if (!lfj || lfj.quoter.toLowerCase() !== MAINNET_LFJ_QUOTER.toLowerCase()) {
     throw new Error("mainnet adapter 1 must be the pinned LFJ venue");
   }
+  if (
+    lfj.excludedPairs?.length !== 1 ||
+    lfj.excludedPairs[0] !== "BTC.b/WAVAX"
+  ) {
+    throw new Error("mainnet LFJ must exclude the low-depth BTC.b/WAVAX route");
+  }
   if (!blackhole) throw new Error("mainnet adapter 2 must be Blackhole");
   if (!pharaoh) throw new Error("mainnet adapter 3 must be Pharaoh");
+  if ((blackhole.excludedPairs?.length ?? 0) > 0 || (pharaoh.excludedPairs?.length ?? 0) > 0) {
+    throw new Error("mainnet Blackhole and Pharaoh must support every launch pair");
+  }
   assertBlackholeRoute(blackhole.routes["WAVAX/USDC"], MAINNET_BLACKHOLE_WAVAX_USDC_POOL, "WAVAX/USDC");
   assertBlackholeRoute(blackhole.routes["WETH.e/WAVAX"], MAINNET_BLACKHOLE_WETH_WAVAX_POOL, "WETH.e/WAVAX");
   assertBlackholeRoute(blackhole.routes["BTC.b/WAVAX"], MAINNET_BLACKHOLE_BTCB_WAVAX_POOL, "BTC.b/WAVAX");
@@ -321,10 +332,18 @@ function parseDexVenues(raw: string, pairs: Record<string, PairConfig>): DexVenu
     if (names.has(name.toLowerCase())) throw new Error("DEX_VENUES names must be unique");
     ids.add(adapterId);
     names.add(name.toLowerCase());
+    const excludedPairs = parseExcludedPairs(value.excludedPairs, pairs, name);
+    const availability = excludedPairs.length > 0 ? { excludedPairs } : {};
 
-    if (kind === "mock") return { kind, name, adapterId };
+    if (kind === "mock") return { kind, name, adapterId, ...availability };
     if (kind === "lfj") {
-      return { kind, name, adapterId, quoter: address(String(value.quoter ?? ""), `${name}.quoter`) };
+      return {
+        kind,
+        name,
+        adapterId,
+        quoter: address(String(value.quoter ?? ""), `${name}.quoter`),
+        ...availability,
+      };
     }
     if (kind === "pharaoh") {
       const routeItems = parseRoutes(value.routes, pairs, name);
@@ -333,7 +352,7 @@ function parseDexVenues(raw: string, pairs: Record<string, PairConfig>): DexVenu
         const spacing = integer(String(route.tickSpacing ?? ""), `${name}.${pairName}.tickSpacing`, 1, 8_388_607);
         routes[pairName] = { tickSpacing: spacing };
       }
-      return { kind, name, adapterId, routes };
+      return { kind, name, adapterId, routes, ...availability };
     }
     if (kind === "blackhole") {
       const routeItems = parseRoutes(value.routes, pairs, name);
@@ -348,10 +367,27 @@ function parseDexVenues(raw: string, pairs: Record<string, PairConfig>): DexVenu
           concentrated: route.concentrated,
         };
       }
-      return { kind, name, adapterId, routes };
+      return { kind, name, adapterId, routes, ...availability };
     }
     throw new Error(`DEX_VENUES[${index}].kind is unsupported`);
   });
+}
+
+function parseExcludedPairs(
+  value: unknown,
+  pairs: Record<string, PairConfig>,
+  venue: string,
+): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`${venue}.excludedPairs must be an array`);
+  const result = value.map((pairName) => String(pairName));
+  if (new Set(result).size !== result.length) {
+    throw new Error(`${venue}.excludedPairs must not contain duplicates`);
+  }
+  for (const pairName of result) {
+    if (!pairs[pairName]) throw new Error(`${venue}.excludedPairs references unknown pair ${pairName}`);
+  }
+  return result;
 }
 
 function parseRoutes(

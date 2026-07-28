@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import websocket from "@fastify/websocket";
-import { formatUnits, getAddress, isAddress, verifyMessage } from "ethers";
+import { formatUnits, getAddress, isAddress, parseUnits, verifyMessage } from "ethers";
 
 import { quotePolicyFor, type SeltraConfig } from "./config.js";
 import {
@@ -470,22 +470,27 @@ export function buildApi(deps: ApiDeps): Api {
     if (!pair) return reply.code(404).send({ error: "pair not supported" });
     if (!quoter) return reply.code(404).send({ error: "no executable quote available" });
     try {
-      const amountIn = 10n ** BigInt(pair.baseDecimals);
+      const amountIn = parseUnits(pair.referenceBaseAmount, pair.baseDecimals);
+      const referenceBaseAmount = Number(pair.referenceBaseAmount);
       const quotes = await quoter.quoteAll(pair.baseAsset, pair.quoteAsset, amountIn);
       const venues = quotes.map((quote) => ({
         name: quote.venue,
-        price: Number(formatUnits(quote.amountOut, pair.quoteDecimals)),
+        price: Number(formatUnits(quote.amountOut, pair.quoteDecimals)) / referenceBaseAmount,
       }));
       const best = venues.reduce((current, candidate) =>
         candidate.price > current.price ? candidate : current,
       );
       const timestamp = Math.max(...quotes.map((quote) => quote.quotedAtMs));
-      await store.insertQuotePoint(pair.id, timestamp, best.price);
+      await Promise.all([
+        store.insertQuotePoint(pair.id, timestamp, best.price),
+        store.insertVenueQuotePoints(pair.id, timestamp, venues),
+      ]);
       return {
         pair: pair.id,
         price: best.price,
         venue: best.name,
         venues,
+        referenceBaseAmount: pair.referenceBaseAmount,
         ts: timestamp,
       };
     } catch {
@@ -500,6 +505,15 @@ export function buildApi(deps: ApiDeps): Api {
     const requested = Number((req.query as { from?: string }).from ?? Date.now() - 86_400_000);
     const from = Number.isFinite(requested) ? Math.max(0, requested) : Date.now() - 86_400_000;
     return store.listQuotePoints(pair.id, from);
+  });
+
+  app.get("/venue-quote-history/:pair", async (req, reply) => {
+    const { pair: pairId } = req.params as { pair: string };
+    const pair = resolvePublicPair(config, pairId);
+    if (!pair) return reply.code(404).send({ error: "pair not supported" });
+    const requested = Number((req.query as { from?: string }).from ?? Date.now() - 86_400_000);
+    const from = Number.isFinite(requested) ? Math.max(0, requested) : Date.now() - 86_400_000;
+    return store.listVenueQuotePoints(pair.id, from);
   });
 
   app.get("/stats", async () => {
