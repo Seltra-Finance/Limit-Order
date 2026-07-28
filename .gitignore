@@ -2,6 +2,7 @@ node_modules/
 dist/
 services/data/
 .env
+.env*.local
 .DS_Store
 .claude/
 docs/

@@ -12,6 +12,7 @@ import {
   MAINNET_WAVAX,
   MAINNET_WETH_E,
   BOOTSTRAP_EOA_GOVERNANCE_ACK,
+  LOCAL_MAINNET_DEV_ACK,
   loadConfig,
 } from "../src/config.js";
 
@@ -141,6 +142,23 @@ describe("mainnet service configuration", () => {
     expect(() => loadConfig(env)).toThrow(/KEEPER_CONFIRM_LIVE/);
     env.KEEPER_CONFIRM_LIVE = "EXECUTE_REAL_MAINNET_ORDER_FILLS";
     expect(loadConfig(env).keeperPrivateKey).toBe(env.KEEPER_PRIVATE_KEY);
+  });
+
+  it("allows an acknowledged localhost mainnet API only with a loopback database and no keeper", () => {
+    const env = mainnetEnv();
+    env.API_HOST = "127.0.0.1";
+    env.CORS_ORIGIN = "http://localhost:3000";
+    env.DATABASE_URL = "postgresql://joshua@127.0.0.1:5432/seltra_mainnet_local";
+    env.LOCAL_MAINNET_DEV_ACK = LOCAL_MAINNET_DEV_ACK;
+    expect(loadConfig(env).corsOrigin).toBe("http://localhost:3000");
+
+    env.DATABASE_URL = "postgresql://seltra@example.test/production";
+    expect(() => loadConfig(env)).toThrow(/explicit https origin/);
+
+    env.DATABASE_URL = "postgresql://joshua@127.0.0.1:5432/seltra_mainnet_local";
+    env.KEEPER_PRIVATE_KEY = `0x${"11".repeat(32)}`;
+    env.KEEPER_CONFIRM_LIVE = "EXECUTE_REAL_MAINNET_ORDER_FILLS";
+    expect(() => loadConfig(env)).toThrow(/explicit https origin/);
   });
 
   it("accepts only the exact bootstrap EOA governance acknowledgement", () => {
