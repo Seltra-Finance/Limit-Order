@@ -30,7 +30,10 @@ async function main(): Promise<void> {
 
   const keeper = config.keeperPrivateKey
     ? new Keeper(config, provider, config.keeperPrivateKey, {
-        onFilled: (hashes) => console.log("filled", hashes),
+        onFilled: (hashes, txHash, path) => console.log("filled", hashes, txHash, path),
+        onPostFillError: (hashes, reason) => {
+          console.log("post-fill persistence failed", hashes, reason.slice(0, 120));
+        },
         onFailed: (hashes, reason) => {
           console.log("fill failed", hashes, reason.slice(0, 120));
           for (const alert of monitor.metrics.ingestKeeperFailure(Date.now())) {
@@ -96,6 +99,7 @@ async function main(): Promise<void> {
 
   const indexer = new Indexer(config, provider, store, {
     onFill: (orderHash) => {
+      keeper?.markReconciled(orderHash);
       engine.remove(orderHash);
       api.broadcast({ type: "fill", data: { orderHash } });
     },

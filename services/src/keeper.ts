@@ -20,6 +20,13 @@ export class Keeper {
   private makerSurplusBps = 7000n;
   private protocolFeeBps = 0n;
   private inFlight = new Set<string>();
+  /**
+   * Transactions that have succeeded but have not yet been reconciled by the
+   * confirmation-delayed indexer. Keeping them separate from `inFlight`
+   * prevents the price watcher from re-simulating an already-consumed Permit2
+   * nonce after `tx.wait()` returns.
+   */
+  private confirmedFills = new Set<string>();
   private readonly quoter: BestVenueQuoter;
   /** rollout caps (spec 2.4), tracked per quote token */
   readonly caps: NotionalCaps;
@@ -29,8 +36,13 @@ export class Keeper {
     private readonly provider: Provider,
     privateKey: string,
     private readonly hooks: {
-      onFilled?: (orderHashes: string[], txHash: string, path: "dex" | "p2p") => void;
+      onFilled?: (
+        orderHashes: string[],
+        txHash: string,
+        path: "dex" | "p2p",
+      ) => void | Promise<void>;
       onFailed?: (orderHashes: string[], reason: string) => void;
+      onPostFillError?: (orderHashes: string[], reason: string) => void;
     } = {},
     quoter?: BestVenueQuoter,
   ) {
@@ -48,7 +60,7 @@ export class Keeper {
 
   /** DEX fill using the exact adapter + calldata tuple that produced the quote. */
   async tryFillDEX(order: StoredOrder, quote: DexQuote): Promise<void> {
-    if (this.inFlight.has(order.orderHash)) return;
+    if (this.inFlight.has(order.orderHash) || this.confirmedFills.has(order.orderHash)) return;
     if (Date.now() - quote.quotedAtMs > this.config.maxQuoteAgeMs) return;
 
     // Keeper economics: our share of the surplus, before gas.
@@ -77,8 +89,9 @@ export class Keeper {
       if (Date.now() - quote.quotedAtMs > this.config.maxQuoteAgeMs) return;
       const tx = await this.settlement.fillOrderDEX(...args);
       const receipt = await tx.wait();
+      this.confirmedFills.add(order.orderHash);
       this.caps.record(notional.token, notional.amount);
-      this.hooks.onFilled?.([order.orderHash], receipt.hash, "dex");
+      await this.notifyFilled([order.orderHash], receipt.hash, "dex");
     } catch (err) {
       this.hooks.onFailed?.([order.orderHash], (err as Error).message);
     } finally {
@@ -90,7 +103,11 @@ export class Keeper {
   async tryFillP2P(match: Match): Promise<boolean> {
     const { a, b } = match;
     const key = a.orderHash + b.orderHash;
-    if (this.inFlight.has(key)) return false;
+    if (
+      this.inFlight.has(key)
+      || this.confirmedFills.has(a.orderHash)
+      || this.confirmedFills.has(b.orderHash)
+    ) return false;
 
     const keeperShare = this.keeperReward(match.surplus);
 
@@ -115,14 +132,38 @@ export class Keeper {
       }
       const tx = await this.settlement.fillOrderP2P(...args);
       const receipt = await tx.wait();
+      this.confirmedFills.add(a.orderHash);
+      this.confirmedFills.add(b.orderHash);
       this.caps.record(b.order.makerAsset, b.order.makingAmount);
-      this.hooks.onFilled?.([a.orderHash, b.orderHash], receipt.hash, "p2p");
+      await this.notifyFilled([a.orderHash, b.orderHash], receipt.hash, "p2p");
       return true;
     } catch (err) {
       this.hooks.onFailed?.([a.orderHash, b.orderHash], (err as Error).message);
       return false;
     } finally {
       this.inFlight.delete(key);
+    }
+  }
+
+  /**
+   * Called after the finalized indexer has persisted the fill. Until then the
+   * order remains suppressed even if updating the off-chain status fails.
+   */
+  markReconciled(orderHash: string): void {
+    this.confirmedFills.delete(orderHash);
+  }
+
+  private async notifyFilled(
+    orderHashes: string[],
+    txHash: string,
+    path: "dex" | "p2p",
+  ): Promise<void> {
+    try {
+      await this.hooks.onFilled?.(orderHashes, txHash, path);
+    } catch (err) {
+      // The transaction is already final. A persistence/notification failure
+      // must not be reported as a keeper execution failure or trigger a retry.
+      this.hooks.onPostFillError?.(orderHashes, (err as Error).message);
     }
   }
 
