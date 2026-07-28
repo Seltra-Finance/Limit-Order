@@ -45,6 +45,20 @@ export interface PublicOrderRecord {
   fill?: PublicFillInfo;
 }
 
+export interface ProtocolStats {
+  /**
+   * Present for a scoped request, or when every represented fill shares one
+   * quote token. Mixed-quote all-market totals are intentionally null.
+   */
+  totalVolumeQuote: string | null;
+  quoteSymbol: string | null;
+  volumeByQuote: { quoteSymbol: string; amount: string }[];
+  ordersFilled: number;
+  ordersResting: number;
+  avgImprovementBps: number | null;
+  p2pMatchRateBps: number | null;
+}
+
 export interface BookLevel {
   price: number;
   size: number;
@@ -269,15 +283,15 @@ export function buildCandles(records: PublicOrderRecord[], intervalSeconds: numb
   return [...buckets.values()].sort((a, b) => a.time - b.time);
 }
 
-export function protocolStats(records: PublicOrderRecord[], primaryPair?: PublicPair) {
-  const filled = records.filter((record) => record.status === "filled");
-  const primaryFilled = primaryPair
-    ? dedupeP2p(filled.filter((record) => record.pair === primaryPair.id))
-    : [];
-  const totalVolume = primaryFilled.reduce((sum, record) => {
-    const quoteAmount = record.side === "buy" ? record.order.makingAmount : record.order.takingAmount;
-    return sum + BigInt(quoteAmount);
-  }, 0n);
+export function protocolStats(
+  records: PublicOrderRecord[],
+  pairs: PublicPair[],
+  selectedPair?: PublicPair,
+): ProtocolStats {
+  const scopedRecords = selectedPair
+    ? records.filter((record) => record.pair === selectedPair.id)
+    : records;
+  const filled = scopedRecords.filter((record) => record.status === "filled");
   const improvements = filled
     .filter((record) => record.fill)
     .map((record) => {
@@ -285,10 +299,48 @@ export function protocolStats(records: PublicOrderRecord[], primaryPair?: Public
       return taking === 0n ? 0 : Number((BigInt(record.fill!.makerImprovement) * 10_000n) / taking);
     });
   const p2p = filled.filter((record) => record.fill?.path === "p2p").length;
+
+  // Quote volume is meaningful only within one denomination. Keep mixed
+  // all-market totals separated instead of adding USDC, WAVAX and USDt.
+  const pairsById = new Map(pairs.map((pair) => [pair.id, pair]));
+  const volumeByQuoteToken = new Map<string, { amount: bigint; decimals: number }>();
+  for (const record of dedupeP2p(filled)) {
+    const pair = pairsById.get(record.pair);
+    if (!pair) continue;
+    const quoteAmount = BigInt(
+      record.side === "buy" ? record.order.makingAmount : record.order.takingAmount,
+    );
+    const current = volumeByQuoteToken.get(pair.quoteSymbol);
+    volumeByQuoteToken.set(pair.quoteSymbol, {
+      amount: (current?.amount ?? 0n) + quoteAmount,
+      decimals: pair.quoteDecimals,
+    });
+  }
+  const volumeByQuote = [...volumeByQuoteToken.entries()]
+    .map(([quoteSymbol, volume]) => ({
+      quoteSymbol,
+      amount: formatUnits(volume.amount, volume.decimals),
+    }))
+    .sort((a, b) => a.quoteSymbol.localeCompare(b.quoteSymbol));
+  const singleQuote = selectedPair?.quoteSymbol
+    ?? (volumeByQuoteToken.size === 1 ? volumeByQuote[0]?.quoteSymbol : undefined);
+  const singleVolume = singleQuote
+    ? volumeByQuoteToken.get(singleQuote) ?? {
+        amount: 0n,
+        decimals: selectedPair?.quoteDecimals ?? 0,
+      }
+    : undefined;
+
   return {
-    totalVolumeQuote: primaryPair ? formatUnits(totalVolume, primaryPair.quoteDecimals) : "0",
+    totalVolumeQuote: singleVolume
+      ? formatUnits(singleVolume.amount, singleVolume.decimals)
+      : null,
+    quoteSymbol: singleQuote ?? null,
+    volumeByQuote: selectedPair ? [] : volumeByQuote,
     ordersFilled: filled.length,
-    ordersResting: records.filter((record) => record.status === "resting" && !record.softCancelled).length,
+    ordersResting: scopedRecords.filter(
+      (record) => record.status === "resting" && !record.softCancelled,
+    ).length,
     avgImprovementBps:
       improvements.length === 0
         ? null
