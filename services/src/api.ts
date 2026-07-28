@@ -250,6 +250,21 @@ export function buildApi(deps: ApiDeps): Api {
   app.addHook("onClose", async () => clearInterval(heartbeat));
 
   // Submit a signed order: {order, permit, signature}.
+  app.get("/markets", async () =>
+    configuredPairs.map((pair) => {
+      const policy = quotePolicyFor(config, pair.quoteAsset);
+      return {
+        pair: pair.id,
+        baseToken: pair.baseAsset,
+        quoteToken: pair.quoteAsset,
+        quoteSymbol: pair.quoteSymbol,
+        quoteDecimals: pair.quoteDecimals,
+        minOrderNotional: policy.minOrderNotional.toString(),
+        minOrderNotionalFormatted: formatUnits(policy.minOrderNotional, pair.quoteDecimals),
+      };
+    }),
+  );
+
   app.post("/orders", async (req, reply) => {
     let stored: StoredOrder;
     try {
@@ -292,24 +307,31 @@ export function buildApi(deps: ApiDeps): Api {
         return reply.code(400).send({ error: "permit amount != makingAmount" });
       }
 
-      const matchedPair = Object.values(config.pairs).find(
+      const matchedPair = configuredPairs.find(
         (pair) =>
-          (pair.base.toLowerCase() === order.makerAsset.toLowerCase() &&
-            pair.quote.toLowerCase() === order.takerAsset.toLowerCase()) ||
-          (pair.quote.toLowerCase() === order.makerAsset.toLowerCase() &&
-            pair.base.toLowerCase() === order.takerAsset.toLowerCase()),
+          (pair.baseAsset.toLowerCase() === order.makerAsset.toLowerCase() &&
+            pair.quoteAsset.toLowerCase() === order.takerAsset.toLowerCase()) ||
+          (pair.quoteAsset.toLowerCase() === order.makerAsset.toLowerCase() &&
+            pair.baseAsset.toLowerCase() === order.takerAsset.toLowerCase()),
       );
       if (Object.keys(config.pairs).length > 0 && !matchedPair) {
         return reply.code(400).send({ error: "pair not supported" });
       }
       if (matchedPair) {
-        const policy = quotePolicyFor(config, matchedPair.quote);
+        const policy = quotePolicyFor(config, matchedPair.quoteAsset);
         const quoteNotional =
-          order.makerAsset.toLowerCase() === matchedPair.quote.toLowerCase()
+          order.makerAsset.toLowerCase() === matchedPair.quoteAsset.toLowerCase()
             ? order.makingAmount
             : order.takingAmount;
         if (policy.minOrderNotional > 0n && quoteNotional < policy.minOrderNotional) {
-          return reply.code(400).send({ error: "order is below minimum quote notional" });
+          return reply.code(400).send({
+            error: `order is below minimum quote notional (${formatUnits(
+              policy.minOrderNotional,
+              matchedPair.quoteDecimals,
+            )} ${matchedPair.quoteSymbol})`,
+            minOrderNotional: policy.minOrderNotional.toString(),
+            quoteToken: matchedPair.quoteAsset,
+          });
         }
       }
 
