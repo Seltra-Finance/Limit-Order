@@ -516,9 +516,16 @@ export function buildApi(deps: ApiDeps): Api {
     return store.listVenueQuotePoints(pair.id, from);
   });
 
-  app.get("/stats", async () => {
+  app.get("/stats", async (req, reply) => {
+    const { pair: requestedPair } = req.query as { pair?: string };
+    const selectedPair = requestedPair
+      ? resolvePublicPair(config, requestedPair)
+      : undefined;
+    if (requestedPair && !selectedPair) {
+      return reply.code(404).send({ error: "pair not supported" });
+    }
     const orders = await store.listOrders();
-    return protocolStats(await publicRecords(orders), configuredPairs[0]);
+    return protocolStats(await publicRecords(orders), configuredPairs, selectedPair);
   });
 
   app.get("/fills", async (req) => {

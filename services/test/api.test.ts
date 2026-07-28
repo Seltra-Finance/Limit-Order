@@ -206,12 +206,28 @@ describe("orderbook API", () => {
 
     const stats = await api.inject({ method: "GET", url: "/stats" });
     expect(stats.json()).toMatchObject({
-      totalVolumeQuote: "0.0",
+      totalVolumeQuote: null,
+      quoteSymbol: null,
+      volumeByQuote: [],
       ordersFilled: 0,
       ordersResting: expect.any(Number),
       avgImprovementBps: null,
       p2pMatchRateBps: null,
     });
+
+    const pairStats = await api.inject({ method: "GET", url: "/stats?pair=WAVAX-USDC" });
+    expect(pairStats.statusCode).toBe(200);
+    expect(pairStats.json()).toMatchObject({
+      totalVolumeQuote: "0.0",
+      quoteSymbol: "USDC",
+      volumeByQuote: [],
+      ordersFilled: 0,
+      ordersResting: expect.any(Number),
+    });
+
+    const unknownStats = await api.inject({ method: "GET", url: "/stats?pair=UNKNOWN-PAIR" });
+    expect(unknownStats.statusCode).toBe(404);
+    expect(unknownStats.json()).toEqual({ error: "pair not supported" });
   });
 
   it("speaks the frontend subscription protocol and sends a book snapshot", async () => {
