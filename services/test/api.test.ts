@@ -24,7 +24,7 @@ const config: SeltraConfig = {
   dexVenues: [{ kind: "mock", name: "Mock", adapterId: 0 }],
   dexAdapterId: 0,
   keeperMinProfit: 0n,
-  minOrderNotional: 0n,
+  minOrderNotional: 1_000_000n,
   maxOrderTtlSeconds: 2_592_000,
   keeperMaxOrderNotional: 0n,
   keeperDailyNotionalCap: 0n,
@@ -116,10 +116,55 @@ describe("orderbook API", () => {
     });
   });
 
+  it("publishes market minimums and accepts a 7 USDC buy while rejecting sub-minimum orders", async () => {
+    const markets = await api.inject({ method: "GET", url: "/markets" });
+    expect(markets.statusCode).toBe(200);
+    expect(markets.json()).toContainEqual({
+      pair: "WAVAX-USDC",
+      baseToken: WAVAX,
+      quoteToken: USDC,
+      quoteSymbol: "USDC",
+      quoteDecimals: 6,
+      minOrderNotional: "1000000",
+      minOrderNotionalFormatted: "1.0",
+    });
+
+    const sevenUsdcBuy = makeOrder({
+      makerAsset: USDC,
+      takerAsset: WAVAX,
+      makingAmount: 7_000_000n,
+      takingAmount: 1n * 10n ** 18n,
+    });
+    const accepted = await api.inject({
+      method: "POST",
+      url: "/orders",
+      payload: await signedBody(sevenUsdcBuy),
+    });
+    expect(accepted.statusCode).toBe(200);
+
+    const belowMinimum = makeOrder({
+      makerAsset: USDC,
+      takerAsset: WAVAX,
+      makingAmount: 999_999n,
+      takingAmount: 1n,
+    });
+    const rejected = await api.inject({
+      method: "POST",
+      url: "/orders",
+      payload: await signedBody(belowMinimum),
+    });
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json()).toMatchObject({
+      error: "order is below minimum quote notional (1.0 USDC)",
+      minOrderNotional: "1000000",
+      quoteToken: USDC,
+    });
+  });
+
   it("rejects a signature that does not recover to the maker", async () => {
     const order = makeOrder();
     const body = await signedBody(order);
-    body.order.takingAmount = "1"; // tamper after signing
+    body.order.takingAmount = "399000000"; // tamper after signing while remaining above the admission minimum
     const res = await api.inject({ method: "POST", url: "/orders", payload: body });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toMatch(/signature/);
