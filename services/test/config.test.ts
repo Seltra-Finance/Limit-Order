@@ -55,22 +55,13 @@ const VENUES = JSON.stringify([
 ]);
 const QUOTE_POLICIES = JSON.stringify({
   [MAINNET_USDC]: {
-    minOrderNotional: "1000000",
     keeperMinProfit: "10000",
-    keeperMaxOrderNotional: "5000000000",
-    keeperDailyNotionalCap: "50000000000",
   },
   [MAINNET_WAVAX]: {
-    minOrderNotional: "200000000000000000",
     keeperMinProfit: "2000000000000000",
-    keeperMaxOrderNotional: "500000000000000000000",
-    keeperDailyNotionalCap: "5000000000000000000000",
   },
   [MAINNET_USDT]: {
-    minOrderNotional: "1000000",
     keeperMinProfit: "10000",
-    keeperMaxOrderNotional: "5000000000",
-    keeperDailyNotionalCap: "50000000000",
   },
 });
 
@@ -97,15 +88,10 @@ describe("mainnet service configuration", () => {
     expect(Object.keys(config.pairs)).toEqual(["WAVAX/USDC", "WETH.e/WAVAX", "BTC.b/WAVAX", "USDC/USDt"]);
     expect(config.dexVenues.map((venue) => venue.adapterId)).toEqual([1, 2, 3]);
     expect(config.quotePolicies?.[MAINNET_USDC.toLowerCase()]?.keeperMinProfit).toBe(10_000n);
-    expect(config.quotePolicies?.[MAINNET_USDC.toLowerCase()]?.minOrderNotional).toBe(1_000_000n);
     expect(config.quotePolicies?.[MAINNET_WAVAX.toLowerCase()]?.keeperMinProfit).toBe(
       2_000_000_000_000_000n,
     );
-    expect(config.quotePolicies?.[MAINNET_WAVAX.toLowerCase()]?.minOrderNotional).toBe(
-      200_000_000_000_000_000n,
-    );
     expect(config.quotePolicies?.[MAINNET_USDT.toLowerCase()]?.keeperMinProfit).toBe(10_000n);
-    expect(config.quotePolicies?.[MAINNET_USDT.toLowerCase()]?.minOrderNotional).toBe(1_000_000n);
   });
 
   it("rejects a substituted Blackhole pool", () => {
@@ -131,6 +117,14 @@ describe("mainnet service configuration", () => {
     delete policies[MAINNET_WAVAX];
     env.QUOTE_POLICIES = JSON.stringify(policies);
     expect(() => loadConfig(env)).toThrow(/missing WAVAX/);
+  });
+
+  it("requires a positive keeper profit floor", () => {
+    const env = mainnetEnv();
+    const policies = JSON.parse(QUOTE_POLICIES);
+    policies[MAINNET_USDC].keeperMinProfit = "0";
+    env.QUOTE_POLICIES = JSON.stringify(policies);
+    expect(() => loadConfig(env)).toThrow(/keeperMinProfit must be a positive integer/);
   });
 
   it("requires two distinct https RPC endpoints on mainnet", () => {

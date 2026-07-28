@@ -1,7 +1,6 @@
 import { AbiCoder, Contract, Wallet, type Provider } from "ethers";
 
 import { SETTLEMENT_ABI } from "./abi.js";
-import { NotionalCaps } from "./caps.js";
 import { quotePolicyFor, type SeltraConfig } from "./config.js";
 import type { Match } from "./matching.js";
 import { orderToJson, permitToJson, type StoredOrder } from "./types.js";
@@ -28,8 +27,6 @@ export class Keeper {
    */
   private confirmedFills = new Set<string>();
   private readonly quoter: BestVenueQuoter;
-  /** rollout caps (spec 2.4), tracked per quote token */
-  readonly caps: NotionalCaps;
 
   constructor(
     private readonly config: SeltraConfig,
@@ -49,13 +46,6 @@ export class Keeper {
     this.wallet = new Wallet(privateKey, provider);
     this.settlement = new Contract(config.settlement, SETTLEMENT_ABI, this.wallet);
     this.quoter = quoter ?? new VenueQuoteCoordinator(config, provider);
-    const tokenCaps = Object.fromEntries(
-      Object.entries(config.quotePolicies ?? {}).map(([token, policy]) => [
-        token,
-        { perOrder: policy.keeperMaxOrderNotional, daily: policy.keeperDailyNotionalCap },
-      ]),
-    );
-    this.caps = new NotionalCaps(config.keeperMaxOrderNotional, config.keeperDailyNotionalCap, tokenCaps);
   }
 
   /** DEX fill using the exact adapter + calldata tuple that produced the quote. */
@@ -68,10 +58,8 @@ export class Keeper {
     if (surplus < 0n) return;
     const keeperShare = this.keeperReward(surplus);
 
-    // Rollout caps are always denominated in the configured pair's quote
-    // token, including reverse-direction orders that sell quote for base.
-    const notional = this.quoteNotional(order);
-    if (!notional || !this.caps.allows(notional.token, notional.amount)) return;
+    const quoteToken = this.quoteToken(order);
+    if (!quoteToken) return;
 
     const args = [
       orderToJson(order.order),
@@ -85,12 +73,11 @@ export class Keeper {
       // Simulate first; simulated failures are never broadcast.
       await this.settlement.fillOrderDEX.staticCall(...args);
       const gasUnits = BigInt(await this.settlement.fillOrderDEX.estimateGas(...args));
-      if (!(await this.isProfitableAfterGas(keeperShare, order.order.takerAsset, notional.token, gasUnits))) return;
+      if (!(await this.isProfitableAfterGas(keeperShare, order.order.takerAsset, quoteToken, gasUnits))) return;
       if (Date.now() - quote.quotedAtMs > this.config.maxQuoteAgeMs) return;
       const tx = await this.settlement.fillOrderDEX(...args);
       const receipt = await tx.wait();
       this.confirmedFills.add(order.orderHash);
-      this.caps.record(notional.token, notional.amount);
       await this.notifyFilled([order.orderHash], receipt.hash, "dex");
     } catch (err) {
       this.hooks.onFailed?.([order.orderHash], (err as Error).message);
@@ -110,9 +97,6 @@ export class Keeper {
     ) return false;
 
     const keeperShare = this.keeperReward(match.surplus);
-
-    // Rollout caps: the P2P quote-side notional is B's full makingAmount.
-    if (!this.caps.allows(b.order.makerAsset, b.order.makingAmount)) return false;
 
     const args = [
       orderToJson(a.order),
@@ -134,7 +118,6 @@ export class Keeper {
       const receipt = await tx.wait();
       this.confirmedFills.add(a.orderHash);
       this.confirmedFills.add(b.orderHash);
-      this.caps.record(b.order.makerAsset, b.order.makingAmount);
       await this.notifyFilled([a.orderHash, b.orderHash], receipt.hash, "p2p");
       return true;
     } catch (err) {
@@ -224,15 +207,15 @@ export class Keeper {
     throw new Error(`no configured gas/profit conversion path from ${token} to ${quoteToken}`);
   }
 
-  private quoteNotional(order: StoredOrder): { token: string; amount: bigint } | undefined {
+  private quoteToken(order: StoredOrder): string | undefined {
     for (const pair of Object.values(this.config.pairs)) {
       const maker = order.order.makerAsset.toLowerCase();
       const taker = order.order.takerAsset.toLowerCase();
       if (maker === pair.base.toLowerCase() && taker === pair.quote.toLowerCase()) {
-        return { token: pair.quote, amount: order.order.takingAmount };
+        return pair.quote;
       }
       if (maker === pair.quote.toLowerCase() && taker === pair.base.toLowerCase()) {
-        return { token: pair.quote, amount: order.order.makingAmount };
+        return pair.quote;
       }
     }
     return undefined;

@@ -47,10 +47,7 @@ describe("Keeper confirmed-fill suppression", () => {
     dexVenues: [],
     dexAdapterId: 0,
     keeperMinProfit: 0n,
-    minOrderNotional: 0n,
     maxOrderTtlSeconds: 604_800,
-    keeperMaxOrderNotional: 0n,
-    keeperDailyNotionalCap: 0n,
     wrappedNative: base,
     gasCostBufferBps: 0,
     quoteDeadlineSeconds: 30,
@@ -128,6 +125,31 @@ describe("Keeper confirmed-fill suppression", () => {
     keeper.markReconciled(orderHash);
     await keeper.tryFillDEX(order, { ...quote, quotedAtMs: Date.now() });
     expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not impose a quote-notional maximum on keeper execution", async () => {
+    const { keeper, quote, send } = harness();
+    const highNotional = 10n ** 40n;
+    const highOrder: StoredOrder = {
+      ...order,
+      orderHash: `0x${"78".repeat(32)}`,
+      order: {
+        ...order.order,
+        makingAmount: highNotional,
+        takingAmount: highNotional,
+      },
+      permit: {
+        ...order.permit,
+        permitted: { token: base, amount: highNotional },
+      },
+    };
+
+    await keeper.tryFillDEX(highOrder, {
+      ...quote,
+      amountOut: highNotional + 10n,
+    });
+
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it("does not classify a post-fill persistence error as an execution failure", async () => {
