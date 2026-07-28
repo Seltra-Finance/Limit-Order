@@ -14,6 +14,7 @@ export interface PublicPair {
   quoteDecimals: number;
   pricePrecision: number;
   amountPrecision: number;
+  referenceBaseAmount: string;
 }
 
 export interface PublicFillInfo {
@@ -81,12 +82,15 @@ export interface Candle {
   volume: number;
 }
 
-const TOKEN_METADATA: Record<string, { decimals: number; amountPrecision: number }> = {
-  WAVAX: { decimals: 18, amountPrecision: 4 },
-  USDC: { decimals: 6, amountPrecision: 2 },
-  USDt: { decimals: 6, amountPrecision: 2 },
-  "WETH.e": { decimals: 18, amountPrecision: 5 },
-  "BTC.b": { decimals: 8, amountPrecision: 6 },
+const TOKEN_METADATA: Record<
+  string,
+  { decimals: number; amountPrecision: number; referenceBaseAmount: string }
+> = {
+  WAVAX: { decimals: 18, amountPrecision: 4, referenceBaseAmount: "1" },
+  USDC: { decimals: 6, amountPrecision: 2, referenceBaseAmount: "100" },
+  USDt: { decimals: 6, amountPrecision: 2, referenceBaseAmount: "100" },
+  "WETH.e": { decimals: 18, amountPrecision: 5, referenceBaseAmount: "0.01" },
+  "BTC.b": { decimals: 8, amountPrecision: 6, referenceBaseAmount: "0.001" },
 };
 
 export const ALLOWED_CANDLE_INTERVALS = new Set([60, 300, 900, 3_600, 14_400, 86_400]);
@@ -295,8 +299,16 @@ export function protocolStats(records: PublicOrderRecord[], primaryPair?: Public
 
 function publicPair(configName: string, pair: PairConfig): PublicPair {
   const [baseSymbol = "BASE", quoteSymbol = "QUOTE"] = configName.split("/");
-  const base = TOKEN_METADATA[baseSymbol] ?? { decimals: 18, amountPrecision: 4 };
-  const quote = TOKEN_METADATA[quoteSymbol] ?? { decimals: 18, amountPrecision: 4 };
+  const base = TOKEN_METADATA[baseSymbol] ?? {
+    decimals: 18,
+    amountPrecision: 4,
+    referenceBaseAmount: "1",
+  };
+  const quote = TOKEN_METADATA[quoteSymbol] ?? {
+    decimals: 18,
+    amountPrecision: 4,
+    referenceBaseAmount: "1",
+  };
   return {
     configName,
     id: `${baseSymbol}-${quoteSymbol}`,
@@ -308,6 +320,7 @@ function publicPair(configName: string, pair: PairConfig): PublicPair {
     quoteDecimals: quote.decimals,
     pricePrecision: quoteSymbol === "USDC" || quoteSymbol === "USDt" ? 2 : 4,
     amountPrecision: base.amountPrecision,
+    referenceBaseAmount: base.referenceBaseAmount,
   };
 }
 

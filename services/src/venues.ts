@@ -52,8 +52,13 @@ export class VenueQuoteCoordinator implements BestVenueQuoter {
     const pairName = findPairName(this.config.pairs, tokenIn, tokenOut);
     if (!pairName) throw new Error("pair is not in the configured registry");
 
+    const availableVenues = this.config.dexVenues.filter(
+      (venue) => !venue.excludedPairs?.includes(pairName),
+    );
     const settled = await Promise.allSettled(
-      this.config.dexVenues.map((venue) => this.quoteVenue(venue, pairName, tokenIn, tokenOut, amountIn)),
+      availableVenues.map((venue) =>
+        this.quoteVenue(venue, pairName, tokenIn, tokenOut, amountIn)
+      ),
     );
     const quotes = settled
       .filter((result): result is PromiseFulfilledResult<DexQuote> => result.status === "fulfilled")

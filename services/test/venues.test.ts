@@ -86,4 +86,21 @@ describe("VenueQuoteCoordinator", () => {
     expect(best.adapterId).toBe(3);
     expect(staticCall).toHaveBeenCalledOnce();
   });
+
+  it("never quotes a venue that excludes the requested pair", async () => {
+    const cfg = config();
+    cfg.dexVenues[0]!.excludedPairs = ["A/B"];
+    const coordinator = new VenueQuoteCoordinator(cfg, null as unknown as Provider, () => 1_000_000);
+    const staticCall = vi.fn().mockResolvedValue(190n);
+    const router = {
+      isRegistered: vi.fn().mockResolvedValue(true),
+      quote: { staticCall },
+    };
+    (coordinator as unknown as { router: typeof router }).router = router;
+
+    const quotes = await coordinator.quoteAll(TOKEN_A, TOKEN_B, 100n);
+    expect(quotes.map((quote) => quote.adapterId)).toEqual([3]);
+    expect(router.isRegistered).toHaveBeenCalledExactlyOnceWith(3);
+    expect(staticCall).toHaveBeenCalledOnce();
+  });
 });

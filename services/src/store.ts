@@ -12,6 +12,15 @@ export interface Store {
   listFills(orderHash?: string): Promise<Fill[]>;
   insertQuotePoint(pair: string, timestampMs: number, price: number): Promise<void>;
   listQuotePoints(pair: string, fromMs: number): Promise<{ t: number; price: number }[]>;
+  insertVenueQuotePoints(
+    pair: string,
+    timestampMs: number,
+    points: { name: string; price: number }[],
+  ): Promise<void>;
+  listVenueQuotePoints(
+    pair: string,
+    fromMs: number,
+  ): Promise<{ t: number; name: string; price: number }[]>;
   getEpoch(maker: string): Promise<bigint>;
   setEpoch(maker: string, epoch: bigint): Promise<void>;
   getIndexerCheckpoint(key: string): Promise<number | undefined>;
@@ -23,6 +32,7 @@ export class MemoryStore implements Store {
   private orders = new Map<string, StoredOrder>();
   private fills: Fill[] = [];
   private quotePoints = new Map<string, { t: number; price: number }[]>();
+  private venueQuotePoints = new Map<string, { t: number; name: string; price: number }[]>();
   private epochs = new Map<string, bigint>();
   private checkpoints = new Map<string, number>();
 
@@ -86,6 +96,31 @@ export class MemoryStore implements Store {
 
   async listQuotePoints(pair: string, fromMs: number): Promise<{ t: number; price: number }[]> {
     return (this.quotePoints.get(pair) ?? []).filter((point) => point.t >= fromMs);
+  }
+
+  async insertVenueQuotePoints(
+    pair: string,
+    timestampMs: number,
+    points: { name: string; price: number }[],
+  ): Promise<void> {
+    const stored = this.venueQuotePoints.get(pair) ?? [];
+    for (const point of points) {
+      const existing = stored.findIndex(
+        (candidate) => candidate.t === timestampMs && candidate.name === point.name,
+      );
+      const next = { t: timestampMs, name: point.name, price: point.price };
+      if (existing >= 0) stored[existing] = next;
+      else stored.push(next);
+    }
+    stored.sort((a, b) => a.t - b.t || a.name.localeCompare(b.name));
+    this.venueQuotePoints.set(pair, stored);
+  }
+
+  async listVenueQuotePoints(
+    pair: string,
+    fromMs: number,
+  ): Promise<{ t: number; name: string; price: number }[]> {
+    return (this.venueQuotePoints.get(pair) ?? []).filter((point) => point.t >= fromMs);
   }
 
   async getEpoch(maker: string): Promise<bigint> {

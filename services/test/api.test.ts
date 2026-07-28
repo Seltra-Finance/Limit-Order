@@ -185,6 +185,7 @@ describe("orderbook API", () => {
         { name: "LFJ", price: 40 },
         { name: "Blackhole", price: 39 },
       ],
+      referenceBaseAmount: "1",
       ts: quote.quotedAtMs,
     });
 
@@ -193,6 +194,15 @@ describe("orderbook API", () => {
       url: `/quote-history/WAVAX-USDC?from=${quote.quotedAtMs - 1}`,
     });
     expect(history.json()).toEqual([{ t: quote.quotedAtMs, price: 40 }]);
+
+    const venueHistory = await api.inject({
+      method: "GET",
+      url: `/venue-quote-history/WAVAX-USDC?from=${quote.quotedAtMs - 1}`,
+    });
+    expect(venueHistory.json()).toEqual([
+      { t: quote.quotedAtMs, name: "Blackhole", price: 39 },
+      { t: quote.quotedAtMs, name: "LFJ", price: 40 },
+    ]);
 
     const stats = await api.inject({ method: "GET", url: "/stats" });
     expect(stats.json()).toMatchObject({

@@ -66,3 +66,16 @@ CREATE TABLE IF NOT EXISTS quote_points (
 
 CREATE INDEX IF NOT EXISTS idx_quote_points_pair_time
     ON quote_points (pair, timestamp_ms DESC);
+
+-- Per-venue executable reference prices. This is intentionally separate from
+-- quote_points so existing best-price history remains backward compatible.
+CREATE TABLE IF NOT EXISTS venue_quote_points (
+    pair         TEXT NOT NULL,
+    venue        TEXT NOT NULL,
+    timestamp_ms BIGINT NOT NULL CHECK (timestamp_ms >= 0),
+    price        DOUBLE PRECISION NOT NULL CHECK (price > 0),
+    PRIMARY KEY (pair, venue, timestamp_ms)
+);
+
+CREATE INDEX IF NOT EXISTS idx_venue_quote_points_pair_time
+    ON venue_quote_points (pair, timestamp_ms DESC);
