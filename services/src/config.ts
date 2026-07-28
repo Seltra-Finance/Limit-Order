@@ -18,6 +18,7 @@ export const MAINNET_BLACKHOLE_HELPER = "0x53D569BC4B37ADbBDB6ab447D92ADf42514AE
 export const MAINNET_PHARAOH_ROUTER = "0xc8B8fCbDb5C019D7802fFb0b39603395D7d3915c";
 export const MAINNET_PHARAOH_QUOTER = "0xB7297301b7CC659BB96D51754643A0Df6eEA2138";
 export const BOOTSTRAP_EOA_GOVERNANCE_ACK = "I_ACCEPT_SINGLE_EOA_GOVERNANCE_RISK";
+export const LOCAL_MAINNET_DEV_ACK = "I_ACCEPT_LOCAL_MAINNET_READ_ONLY_MODE";
 
 export interface PairConfig {
   base: string;
@@ -196,7 +197,11 @@ function validateMainnet(config: SeltraConfig, env: NodeJS.ProcessEnv): void {
   if (config.wrappedNative.toLowerCase() !== MAINNET_WAVAX.toLowerCase()) {
     throw new Error("mainnet WRAPPED_NATIVE must be canonical WAVAX");
   }
-  if (config.corsOrigin === "*" || !config.corsOrigin.startsWith("https://")) {
+  const localMainnetDev = env.LOCAL_MAINNET_DEV_ACK === LOCAL_MAINNET_DEV_ACK;
+  if (
+    config.corsOrigin === "*" ||
+    (!config.corsOrigin.startsWith("https://") && !isSafeLocalMainnetDev(config, localMainnetDev))
+  ) {
     throw new Error("mainnet CORS_ORIGIN must be one explicit https origin");
   }
   if (config.keeperPrivateKey && env.KEEPER_CONFIRM_LIVE !== "EXECUTE_REAL_MAINNET_ORDER_FILLS") {
@@ -244,6 +249,22 @@ function validateMainnet(config: SeltraConfig, env: NodeJS.ProcessEnv): void {
     pharaoh.routes["USDC/USDt"]?.tickSpacing !== 1
   ) {
     throw new Error("Pharaoh launch-pair tick spacings do not match the validated pools");
+  }
+}
+
+function isSafeLocalMainnetDev(config: SeltraConfig, acknowledged: boolean): boolean {
+  if (!acknowledged || config.keeperPrivateKey) return false;
+  if (config.apiHost !== "127.0.0.1" && config.apiHost !== "localhost") return false;
+  if (config.corsOrigin !== "http://localhost:3000" && config.corsOrigin !== "http://127.0.0.1:3000") {
+    return false;
+  }
+  if (!config.databaseUrl) return false;
+  try {
+    const database = new URL(config.databaseUrl);
+    return database.protocol === "postgresql:" &&
+      (database.hostname === "127.0.0.1" || database.hostname === "localhost");
+  } catch {
+    return false;
   }
 }
 
