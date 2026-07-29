@@ -26,10 +26,7 @@ export interface PairConfig {
 }
 
 export interface QuotePolicy {
-  minOrderNotional: bigint;
   keeperMinProfit: bigint;
-  keeperMaxOrderNotional: bigint;
-  keeperDailyNotionalCap: bigint;
 }
 
 interface DexVenueBase {
@@ -80,11 +77,8 @@ export interface SeltraConfig {
   /** Legacy single-adapter fallback, restricted to non-mainnet development. */
   dexAdapterId: number;
   keeperMinProfit: bigint;
-  minOrderNotional: bigint;
   maxOrderTtlSeconds: number;
-  keeperMaxOrderNotional: bigint;
-  keeperDailyNotionalCap: bigint;
-  /** Quote-token-native limits. Required on mainnet; global fields are dev fallbacks. */
+  /** Quote-token-native keeper profit floors. Required on mainnet. */
   quotePolicies?: Record<string, QuotePolicy>;
   wrappedNative: string;
   gasCostBufferBps: number;
@@ -130,20 +124,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SeltraConfig {
     dexVenues,
     dexAdapterId,
     keeperMinProfit: nonNegativeBigInt(env.KEEPER_MIN_PROFIT ?? "0", "KEEPER_MIN_PROFIT"),
-    minOrderNotional: nonNegativeBigInt(env.MIN_ORDER_NOTIONAL ?? "0", "MIN_ORDER_NOTIONAL"),
     maxOrderTtlSeconds: integer(
       env.MAX_ORDER_TTL_SECONDS ?? "2592000",
       "MAX_ORDER_TTL_SECONDS",
       60,
       31_536_000,
-    ),
-    keeperMaxOrderNotional: nonNegativeBigInt(
-      env.KEEPER_MAX_ORDER_NOTIONAL ?? "0",
-      "KEEPER_MAX_ORDER_NOTIONAL",
-    ),
-    keeperDailyNotionalCap: nonNegativeBigInt(
-      env.KEEPER_DAILY_NOTIONAL_CAP ?? "0",
-      "KEEPER_DAILY_NOTIONAL_CAP",
     ),
     quotePolicies: env.QUOTE_POLICIES ? parseQuotePolicies(env.QUOTE_POLICIES) : {},
     wrappedNative: address(
@@ -292,23 +277,8 @@ function parseQuotePolicies(raw: string): Record<string, QuotePolicy> {
     }
     const value = item as Record<string, unknown>;
     const policy: QuotePolicy = {
-      minOrderNotional: positiveBigInt(String(value.minOrderNotional ?? ""), `${token}.minOrderNotional`),
       keeperMinProfit: positiveBigInt(String(value.keeperMinProfit ?? ""), `${token}.keeperMinProfit`),
-      keeperMaxOrderNotional: positiveBigInt(
-        String(value.keeperMaxOrderNotional ?? ""),
-        `${token}.keeperMaxOrderNotional`,
-      ),
-      keeperDailyNotionalCap: positiveBigInt(
-        String(value.keeperDailyNotionalCap ?? ""),
-        `${token}.keeperDailyNotionalCap`,
-      ),
     };
-    if (policy.minOrderNotional > policy.keeperMaxOrderNotional) {
-      throw new Error(`${token} minimum cannot exceed its per-order keeper cap`);
-    }
-    if (policy.keeperMaxOrderNotional > policy.keeperDailyNotionalCap) {
-      throw new Error(`${token} per-order keeper cap cannot exceed its daily cap`);
-    }
     policies[normalizedToken] = policy;
   }
   return policies;
@@ -316,10 +286,7 @@ function parseQuotePolicies(raw: string): Record<string, QuotePolicy> {
 
 export function quotePolicyFor(config: SeltraConfig, quoteToken: string): QuotePolicy {
   return config.quotePolicies?.[quoteToken.toLowerCase()] ?? {
-    minOrderNotional: config.minOrderNotional,
     keeperMinProfit: config.keeperMinProfit,
-    keeperMaxOrderNotional: config.keeperMaxOrderNotional,
-    keeperDailyNotionalCap: config.keeperDailyNotionalCap,
   };
 }
 
