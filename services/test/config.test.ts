@@ -55,13 +55,13 @@ const VENUES = JSON.stringify([
 ]);
 const QUOTE_POLICIES = JSON.stringify({
   [MAINNET_USDC]: {
-    keeperMinProfit: "10000",
+    keeperMinProfit: "1000",
   },
   [MAINNET_WAVAX]: {
-    keeperMinProfit: "2000000000000000",
+    keeperMinProfit: "200000000000000",
   },
   [MAINNET_USDT]: {
-    keeperMinProfit: "10000",
+    keeperMinProfit: "1000",
   },
 });
 
@@ -87,11 +87,11 @@ describe("mainnet service configuration", () => {
     const config = loadConfig(mainnetEnv());
     expect(Object.keys(config.pairs)).toEqual(["WAVAX/USDC", "WETH.e/WAVAX", "BTC.b/WAVAX", "USDC/USDt"]);
     expect(config.dexVenues.map((venue) => venue.adapterId)).toEqual([1, 2, 3]);
-    expect(config.quotePolicies?.[MAINNET_USDC.toLowerCase()]?.keeperMinProfit).toBe(10_000n);
+    expect(config.quotePolicies?.[MAINNET_USDC.toLowerCase()]?.keeperMinProfit).toBe(1_000n);
     expect(config.quotePolicies?.[MAINNET_WAVAX.toLowerCase()]?.keeperMinProfit).toBe(
-      2_000_000_000_000_000n,
+      200_000_000_000_000n,
     );
-    expect(config.quotePolicies?.[MAINNET_USDT.toLowerCase()]?.keeperMinProfit).toBe(10_000n);
+    expect(config.quotePolicies?.[MAINNET_USDT.toLowerCase()]?.keeperMinProfit).toBe(1_000n);
   });
 
   it("rejects a substituted Blackhole pool", () => {
