@@ -12,6 +12,7 @@ const USDC = "0x5425890298aed601595a70AB815c96711a31Bc65";
 
 const config: SeltraConfig = {
   rpcUrl: "",
+  quoteRpcUrl: "",
   chainId: 43113,
   permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
   settlement: "0x00000000000000000000000000000000DeaDBeef",
@@ -29,7 +30,10 @@ const config: SeltraConfig = {
   gasCostBufferBps: 2000,
   quoteDeadlineSeconds: 30,
   maxQuoteAgeMs: 5000,
+  watcherPollIntervalMs: 60_000,
   pollIntervalMs: 60000,
+  watcherMaxQuoteGroupsPerTick: 32,
+  publicQuoteCacheMs: 10_000,
   indexerStartBlock: 0,
   indexerConfirmations: 0,
   indexerBatchSize: 2000,
@@ -74,12 +78,16 @@ describe("orderbook API", () => {
     extra: "0x",
     quotedAtMs: 1_700_000_000_000,
   };
+  let quoteAllCalls = 0;
   const quoter = {
     quoteBest: async () => quote,
-    quoteAll: async () => [
-      quote,
-      { ...quote, adapterId: 2, venue: "Blackhole", amountOut: 39n * 10n ** 6n },
-    ],
+    quoteAll: async () => {
+      quoteAllCalls += 1;
+      return [
+        quote,
+        { ...quote, adapterId: 2, venue: "Blackhole", amountOut: 39n * 10n ** 6n },
+      ];
+    },
   };
   const api = buildApi({ config, store, quoter });
   let firstOrderHash = "";
@@ -212,6 +220,14 @@ describe("orderbook API", () => {
       ],
       referenceBaseAmount: "1",
       ts: quote.quotedAtMs,
+    });
+    const cached = await api.inject({ method: "GET", url: "/quote/WAVAX-USDC" });
+    expect(cached.json()).toEqual(live.json());
+    expect(quoteAllCalls).toBe(1);
+    expect(api.rpcBudgetSnapshot()).toEqual({
+      publicQuoteCacheHits: 1,
+      publicQuoteCacheMisses: 1,
+      publicQuoteRequestsCoalesced: 0,
     });
 
     const history = await api.inject({

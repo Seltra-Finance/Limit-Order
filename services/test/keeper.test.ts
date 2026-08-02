@@ -35,6 +35,7 @@ describe("Keeper confirmed-fill suppression", () => {
 
   const config: SeltraConfig = {
     rpcUrl: "http://127.0.0.1:8545",
+    quoteRpcUrl: "http://127.0.0.1:8545",
     chainId: 43113,
     permit2: "0x0000000000000000000000000000000000000001",
     settlement: "0x0000000000000000000000000000000000000002",
@@ -52,7 +53,10 @@ describe("Keeper confirmed-fill suppression", () => {
     gasCostBufferBps: 0,
     quoteDeadlineSeconds: 30,
     maxQuoteAgeMs: 60_000,
+    watcherPollIntervalMs: 2_000,
     pollIntervalMs: 2_000,
+    watcherMaxQuoteGroupsPerTick: 32,
+    publicQuoteCacheMs: 5_000,
     indexerStartBlock: 1,
     indexerConfirmations: 2,
     indexerBatchSize: 2_000,

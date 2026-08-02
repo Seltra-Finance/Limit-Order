@@ -15,6 +15,7 @@ import {
   LOCAL_MAINNET_DEV_ACK,
   loadConfig,
 } from "../src/config.js";
+import { estimateSteadyStateDailyAlchemyCu } from "../src/rpcBudget.js";
 
 const PAIRS = JSON.stringify({
   "WAVAX/USDC": { base: MAINNET_WAVAX, quote: MAINNET_USDC },
@@ -69,6 +70,7 @@ function mainnetEnv(): NodeJS.ProcessEnv {
   return {
     CHAIN_ID: "43114",
     RPC_URLS: "https://primary-rpc.example.test,https://fallback-rpc.example.test",
+    QUOTE_RPC_URL: "https://public-rpc.example.test",
     SETTLEMENT: "0x0000000000000000000000000000000000000011",
     ROUTER: "0x0000000000000000000000000000000000000022",
     PAIRS,
@@ -76,6 +78,10 @@ function mainnetEnv(): NodeJS.ProcessEnv {
     DATABASE_URL: "postgresql://localhost/seltra",
     INDEXER_START_BLOCK: "70000000",
     CORS_ORIGIN: "https://app.seltra.finance",
+    POLL_INTERVAL_MS: "10000",
+    WATCHER_POLL_INTERVAL_MS: "2000",
+    WATCHER_MAX_QUOTE_GROUPS_PER_TICK: "4",
+    PUBLIC_QUOTE_CACHE_MS: "10000",
     QUOTE_POLICIES,
     MAX_ORDER_TTL_SECONDS: "604800",
     MAINNET_CONFIRM: "SELTRA_MAINNET_CONFIG_REVIEWED",
@@ -87,6 +93,12 @@ describe("mainnet service configuration", () => {
     const config = loadConfig(mainnetEnv());
     expect(Object.keys(config.pairs)).toEqual(["WAVAX/USDC", "WETH.e/WAVAX", "BTC.b/WAVAX", "USDC/USDt"]);
     expect(config.dexVenues.map((venue) => venue.adapterId)).toEqual([1, 2, 3]);
+    expect(config.pollIntervalMs).toBe(10_000);
+    expect(config.watcherPollIntervalMs).toBe(2_000);
+    expect(config.watcherMaxQuoteGroupsPerTick).toBe(4);
+    expect(config.publicQuoteCacheMs).toBe(10_000);
+    expect(config.quoteRpcUrl).toBe("https://public-rpc.example.test/");
+    expect(estimateSteadyStateDailyAlchemyCu(config)).toBe(1_209_600);
     expect(config.quotePolicies?.[MAINNET_USDC.toLowerCase()]?.keeperMinProfit).toBe(1_000n);
     expect(config.quotePolicies?.[MAINNET_WAVAX.toLowerCase()]?.keeperMinProfit).toBe(
       200_000_000_000_000n,
@@ -135,12 +147,44 @@ describe("mainnet service configuration", () => {
     expect(() => loadConfig(env)).toThrow(/must use https/);
   });
 
+  it("requires a dedicated public quote RPC on mainnet", () => {
+    const missing = mainnetEnv();
+    delete missing.QUOTE_RPC_URL;
+    expect(() => loadConfig(missing)).toThrow(/QUOTE_RPC_URL/);
+
+    const paidPrimary = mainnetEnv();
+    paidPrimary.QUOTE_RPC_URL = "https://primary-rpc.example.test";
+    expect(() => loadConfig(paidPrimary)).toThrow(/differ from the paid primary/);
+
+    const insecure = mainnetEnv();
+    insecure.QUOTE_RPC_URL = "http://public-rpc.example.test";
+    expect(() => loadConfig(insecure)).toThrow(/https QUOTE_RPC_URL/);
+  });
+
   it("requires an independent confirmation before a mainnet keeper key is loaded", () => {
     const env = mainnetEnv();
     env.KEEPER_PRIVATE_KEY = `0x${"11".repeat(32)}`;
     expect(() => loadConfig(env)).toThrow(/KEEPER_CONFIRM_LIVE/);
     env.KEEPER_CONFIRM_LIVE = "EXECUTE_REAL_MAINNET_ORDER_FILLS";
     expect(loadConfig(env).keeperPrivateKey).toBe(env.KEEPER_PRIVATE_KEY);
+  });
+
+  it("fails closed when mainnet RPC-budget guards are weakened", () => {
+    const fastPoll = mainnetEnv();
+    fastPoll.POLL_INTERVAL_MS = "2000";
+    expect(() => loadConfig(fastPoll)).toThrow(/POLL_INTERVAL_MS/);
+
+    const fastWatcher = mainnetEnv();
+    fastWatcher.WATCHER_POLL_INTERVAL_MS = "1000";
+    expect(() => loadConfig(fastWatcher)).toThrow(/WATCHER_POLL_INTERVAL_MS/);
+
+    const unboundedWatcher = mainnetEnv();
+    unboundedWatcher.WATCHER_MAX_QUOTE_GROUPS_PER_TICK = "5";
+    expect(() => loadConfig(unboundedWatcher)).toThrow(/WATCHER_MAX_QUOTE_GROUPS_PER_TICK/);
+
+    const shortPublicCache = mainnetEnv();
+    shortPublicCache.PUBLIC_QUOTE_CACHE_MS = "5000";
+    expect(() => loadConfig(shortPublicCache)).toThrow(/PUBLIC_QUOTE_CACHE_MS/);
   });
 
   it("allows an acknowledged localhost mainnet API only with a loopback database and no keeper", () => {

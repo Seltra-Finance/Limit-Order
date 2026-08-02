@@ -15,6 +15,15 @@ import { VenueQuoteCoordinator, type BestVenueQuoter, type DexQuote } from "./ve
 export class PriceWatcher {
   private readonly quoter: BestVenueQuoter;
   private timer?: NodeJS.Timeout;
+  private running = false;
+  private groupCursor = 0;
+  private readonly stats = {
+    ticks: 0,
+    overlappingTicksSkipped: 0,
+    groupsSeen: 0,
+    groupsQuoted: 0,
+    groupsDeferred: 0,
+  };
 
   constructor(
     private readonly config: SeltraConfig,
@@ -27,7 +36,8 @@ export class PriceWatcher {
   }
 
   start(): void {
-    this.timer = setInterval(() => void this.tick().catch(() => {}), this.config.pollIntervalMs);
+    void this.runTick();
+    this.timer = setInterval(() => void this.runTick(), this.config.watcherPollIntervalMs);
   }
 
   stop(): void {
@@ -35,10 +45,76 @@ export class PriceWatcher {
   }
 
   async tick(): Promise<void> {
+    this.stats.ticks += 1;
     const resting = await this.store.listOrders({ status: "resting" });
-    for (const o of resting) {
-      await this.checkOrder(o);
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    const groups = new Map<string, StoredOrder[]>();
+
+    for (const order of resting) {
+      if (order.order.expiry <= now) {
+        await this.store.setStatus(order.orderHash, "expired");
+        continue;
+      }
+      const key = quoteGroupKey(order);
+      const members = groups.get(key) ?? [];
+      members.push(order);
+      groups.set(key, members);
     }
+
+    const orderedGroups = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+    if (orderedGroups.length === 0) {
+      this.groupCursor = 0;
+      return;
+    }
+
+    // A Grid normally collapses into one or two exact-size groups per side.
+    // The hard cap prevents arbitrary order cardinality from turning into an
+    // unbounded RPC bill. Rotation gives every distinct group a fair turn.
+    const limit = Math.min(this.config.watcherMaxQuoteGroupsPerTick, orderedGroups.length);
+    this.stats.groupsSeen += orderedGroups.length;
+    this.stats.groupsQuoted += limit;
+    this.stats.groupsDeferred += orderedGroups.length - limit;
+    const start = this.groupCursor % orderedGroups.length;
+    const selected = Array.from(
+      { length: limit },
+      (_, offset) => orderedGroups[(start + offset) % orderedGroups.length]!,
+    );
+    this.groupCursor = (start + limit) % orderedGroups.length;
+
+    await Promise.all(selected.map(async ([, members]) => {
+      const sample = members[0]!;
+      try {
+        const quote = await this.quoter.quoteBest(
+          sample.order.makerAsset,
+          sample.order.takerAsset,
+          sample.order.makingAmount,
+        );
+        for (const order of members) {
+          if (quote.amountOut >= order.order.takingAmount) this.onFillable(order, quote);
+        }
+      } catch {
+        // No enabled route/liquidity; retry when this group rotates back in.
+      }
+    }));
+  }
+
+  private async runTick(): Promise<void> {
+    if (this.running) {
+      this.stats.overlappingTicksSkipped += 1;
+      return;
+    }
+    this.running = true;
+    try {
+      await this.tick();
+    } catch {
+      // A later bounded tick retries transient store/RPC failures.
+    } finally {
+      this.running = false;
+    }
+  }
+
+  rpcBudgetSnapshot(): typeof this.stats {
+    return { ...this.stats };
   }
 
   /**
@@ -64,4 +140,12 @@ export class PriceWatcher {
       // P2P or be retried by a later polling tick.
     }
   }
+}
+
+function quoteGroupKey(order: StoredOrder): string {
+  return [
+    order.order.makerAsset.toLowerCase(),
+    order.order.takerAsset.toLowerCase(),
+    order.order.makingAmount.toString(),
+  ].join(":");
 }
