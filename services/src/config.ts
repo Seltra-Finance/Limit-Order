@@ -60,6 +60,8 @@ export type DexVenueConfig = MockVenueConfig | LfjVenueConfig | PharaohVenueConf
 export interface SeltraConfig {
   rpcUrl: string;
   rpcUrls?: string[];
+  /** Dedicated bounded read endpoint for high-frequency executable quotes. */
+  quoteRpcUrl: string;
   chainId: number;
   permit2: string;
   settlement: string;
@@ -84,7 +86,14 @@ export interface SeltraConfig {
   gasCostBufferBps: number;
   quoteDeadlineSeconds: number;
   maxQuoteAgeMs: number;
+  /** DEX/Grid evaluation cadence; may use a dedicated public quote RPC. */
+  watcherPollIntervalMs: number;
+  /** Paid-chain indexer and monitor cadence. */
   pollIntervalMs: number;
+  /** Hard cap on distinct exact order-size quotes evaluated per watcher tick. */
+  watcherMaxQuoteGroupsPerTick: number;
+  /** Shared public reference-quote cache; bounds RPC usage across API clients. */
+  publicQuoteCacheMs: number;
   indexerStartBlock: number;
   indexerConfirmations: number;
   indexerBatchSize: number;
@@ -110,6 +119,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SeltraConfig {
   const config: SeltraConfig = {
     rpcUrl: rpcUrls[0],
     rpcUrls,
+    quoteRpcUrl: env.QUOTE_RPC_URL
+      ? httpUrl(env.QUOTE_RPC_URL.trim(), "QUOTE_RPC_URL")
+      : rpcUrls[0],
     chainId,
     permit2: address(env.PERMIT2 ?? CANONICAL_PERMIT2, "PERMIT2"),
     settlement,
@@ -139,6 +151,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SeltraConfig {
     quoteDeadlineSeconds: integer(env.QUOTE_DEADLINE_SECONDS ?? "30", "QUOTE_DEADLINE_SECONDS", 5, 300),
     maxQuoteAgeMs: integer(env.MAX_QUOTE_AGE_MS ?? "5000", "MAX_QUOTE_AGE_MS", 250, 60_000),
     pollIntervalMs: integer(env.POLL_INTERVAL_MS ?? "2000", "POLL_INTERVAL_MS", 250, 60_000),
+    watcherPollIntervalMs: integer(
+      env.WATCHER_POLL_INTERVAL_MS ?? env.POLL_INTERVAL_MS ?? "2000",
+      "WATCHER_POLL_INTERVAL_MS",
+      250,
+      60_000,
+    ),
+    watcherMaxQuoteGroupsPerTick: integer(
+      env.WATCHER_MAX_QUOTE_GROUPS_PER_TICK ?? "32",
+      "WATCHER_MAX_QUOTE_GROUPS_PER_TICK",
+      1,
+      10_000,
+    ),
+    publicQuoteCacheMs: integer(
+      env.PUBLIC_QUOTE_CACHE_MS ?? "5000",
+      "PUBLIC_QUOTE_CACHE_MS",
+      250,
+      60_000,
+    ),
     indexerStartBlock: integer(env.INDEXER_START_BLOCK ?? "0", "INDEXER_START_BLOCK", 0),
     indexerConfirmations: integer(env.INDEXER_CONFIRMATIONS ?? "2", "INDEXER_CONFIRMATIONS", 0, 100),
     indexerBatchSize: integer(env.INDEXER_BATCH_SIZE ?? "2000", "INDEXER_BATCH_SIZE", 1, 20_000),
@@ -162,6 +192,12 @@ function validateMainnet(config: SeltraConfig, env: NodeJS.ProcessEnv): void {
   if ((config.rpcUrls?.length ?? 0) < 2) throw new Error("mainnet RPC_URLS requires primary and fallback endpoints");
   if (config.rpcUrls?.some((url) => !url.startsWith("https://"))) {
     throw new Error("mainnet RPC_URLS entries must use https");
+  }
+  if (!env.QUOTE_RPC_URL || !config.quoteRpcUrl.startsWith("https://")) {
+    throw new Error("mainnet requires an explicit https QUOTE_RPC_URL");
+  }
+  if (config.quoteRpcUrl === config.rpcUrl) {
+    throw new Error("mainnet QUOTE_RPC_URL must differ from the paid primary RPC");
   }
   if (env.MAINNET_CONFIRM !== "SELTRA_MAINNET_CONFIG_REVIEWED") {
     throw new Error("mainnet requires MAINNET_CONFIRM=SELTRA_MAINNET_CONFIG_REVIEWED");
@@ -191,6 +227,18 @@ function validateMainnet(config: SeltraConfig, env: NodeJS.ProcessEnv): void {
   }
   if (config.keeperPrivateKey && env.KEEPER_CONFIRM_LIVE !== "EXECUTE_REAL_MAINNET_ORDER_FILLS") {
     throw new Error("a mainnet keeper key requires KEEPER_CONFIRM_LIVE=EXECUTE_REAL_MAINNET_ORDER_FILLS");
+  }
+  if (config.pollIntervalMs < 10_000) {
+    throw new Error("mainnet POLL_INTERVAL_MS must be at least 10000 to bound RPC usage");
+  }
+  if (!env.WATCHER_POLL_INTERVAL_MS || config.watcherPollIntervalMs < 2_000) {
+    throw new Error("mainnet WATCHER_POLL_INTERVAL_MS must be explicit and at least 2000");
+  }
+  if (config.watcherMaxQuoteGroupsPerTick > 4) {
+    throw new Error("mainnet WATCHER_MAX_QUOTE_GROUPS_PER_TICK must be at most 4");
+  }
+  if (config.publicQuoteCacheMs < 10_000) {
+    throw new Error("mainnet PUBLIC_QUOTE_CACHE_MS must be at least 10000");
   }
 
   assertPair(config.pairs["WAVAX/USDC"], MAINNET_WAVAX, MAINNET_USDC, "WAVAX/USDC");

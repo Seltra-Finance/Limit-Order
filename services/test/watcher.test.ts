@@ -9,6 +9,7 @@ import { PriceWatcher } from "../src/watcher.js";
 
 const config: SeltraConfig = {
   rpcUrl: "http://localhost:8545/",
+  quoteRpcUrl: "http://localhost:8545/",
   chainId: 43113,
   permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
   settlement: "0x0000000000000000000000000000000000000001",
@@ -26,7 +27,10 @@ const config: SeltraConfig = {
   gasCostBufferBps: 2000,
   quoteDeadlineSeconds: 30,
   maxQuoteAgeMs: 5000,
+  watcherPollIntervalMs: 60_000,
   pollIntervalMs: 60_000,
+  watcherMaxQuoteGroupsPerTick: 32,
+  publicQuoteCacheMs: 5_000,
   indexerStartBlock: 0,
   indexerConfirmations: 0,
   indexerBatchSize: 2000,
@@ -59,12 +63,18 @@ function storedOrder(expiry = BigInt(Math.floor(Date.now() / 1000) + 3600)): Sto
   };
 }
 
-function setup(result: DexQuote | Error) {
+function setup(result: DexQuote | Error, watcherMaxQuoteGroupsPerTick = 32) {
   const store = new MemoryStore();
   const onFillable = vi.fn();
   const quoteBest = result instanceof Error ? vi.fn().mockRejectedValue(result) : vi.fn().mockResolvedValue(result);
   const quoter: BestVenueQuoter = { quoteBest };
-  const watcher = new PriceWatcher(config, null as unknown as Provider, store, onFillable, quoter);
+  const watcher = new PriceWatcher(
+    { ...config, watcherMaxQuoteGroupsPerTick },
+    null as unknown as Provider,
+    store,
+    onFillable,
+    quoter,
+  );
   return { store, watcher, onFillable, quoteBest };
 }
 
@@ -107,5 +117,56 @@ describe("PriceWatcher executable venue quotes", () => {
     await store.insertOrder(order);
     await watcher.tick();
     expect((await store.getOrder(order.orderHash))?.status).toBe("expired");
+  });
+
+  it("quotes identical Grid child sizes once and fans the result out", async () => {
+    const { store, watcher, onFillable, quoteBest } = setup(quote);
+    const first = storedOrder();
+    first.orderHash = "0x01";
+    const second = storedOrder();
+    second.orderHash = "0x02";
+    second.order.salt = 2n;
+    second.permit.nonce = 2n;
+    second.order.takingAmount = 500n;
+    await store.insertOrder(first);
+    await store.insertOrder(second);
+
+    await watcher.tick();
+
+    expect(quoteBest).toHaveBeenCalledOnce();
+    expect(onFillable).toHaveBeenCalledOnce();
+    expect(onFillable).toHaveBeenCalledWith(first, quote);
+    expect(watcher.rpcBudgetSnapshot()).toMatchObject({
+      ticks: 1,
+      groupsSeen: 1,
+      groupsQuoted: 1,
+      groupsDeferred: 0,
+    });
+  });
+
+  it("enforces the per-tick quote cap and rotates fairly across groups", async () => {
+    const { store, watcher, quoteBest } = setup({ ...quote, amountOut: 1_000n }, 1);
+    for (let i = 0; i < 3; i++) {
+      const order = storedOrder();
+      order.orderHash = `0x0${i + 1}`;
+      order.order.makingAmount = BigInt(10 + i);
+      order.order.salt = BigInt(i + 1);
+      order.permit.permitted.amount = BigInt(10 + i);
+      order.permit.nonce = BigInt(i + 1);
+      await store.insertOrder(order);
+    }
+
+    await watcher.tick();
+    await watcher.tick();
+    await watcher.tick();
+
+    expect(quoteBest).toHaveBeenCalledTimes(3);
+    expect(new Set(quoteBest.mock.calls.map((call) => call[2]))).toEqual(new Set([10n, 11n, 12n]));
+    expect(watcher.rpcBudgetSnapshot()).toMatchObject({
+      ticks: 3,
+      groupsSeen: 9,
+      groupsQuoted: 3,
+      groupsDeferred: 6,
+    });
   });
 });

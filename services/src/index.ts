@@ -14,17 +14,22 @@ import { preflightRuntime } from "./preflight.js";
 import { createRpcProvider } from "./rpc.js";
 import { nonceToInvalidation } from "./permit2.js";
 import { VenueQuoteCoordinator } from "./venues.js";
+import { estimateSteadyStateDailyAlchemyCu } from "./rpcBudget.js";
 
 /** Boots the full off-chain stack: orderbook API + matching engine + price
  *  watcher + keeper + indexer, wired together (revised spec 1.7-1.9). */
 async function main(): Promise<void> {
   const config = loadConfig();
   const provider = createRpcProvider(config);
+  const quoteProvider = createRpcProvider({
+    rpcUrl: config.quoteRpcUrl,
+    chainId: config.chainId,
+  });
   await preflightRuntime(config, provider);
   const store = config.databaseUrl ? new PgStore(config.databaseUrl) : new MemoryStore();
   const settlement = new Contract(config.settlement, SETTLEMENT_ABI, provider);
   const permit2 = new Contract(config.permit2, PERMIT2_ABI, provider);
-  const venueQuoter = new VenueQuoteCoordinator(config, provider);
+  const venueQuoter = new VenueQuoteCoordinator(config, quoteProvider);
 
   const monitor = new SeltraMonitor(config, provider);
 
@@ -40,7 +45,7 @@ async function main(): Promise<void> {
             void emitAlert(alert, process.env.ALERT_WEBHOOK_URL);
           }
         },
-      })
+      }, venueQuoter)
     : undefined;
   if (keeper) await keeper.sync();
 
@@ -56,7 +61,7 @@ async function main(): Promise<void> {
 
   const watcher = new PriceWatcher(
     config,
-    provider,
+    quoteProvider,
     store,
     (order, quote) => {
       if (keeper) void keeper.tryFillDEX(order, quote);
@@ -70,12 +75,10 @@ async function main(): Promise<void> {
     quoter: venueQuoter,
     onNewOrder: keeper
       ? (order) => {
-          const matchedP2P = engine.add(order);
-          if (!matchedP2P) {
-            void watcher.checkOrder(order).catch((error: unknown) => {
-              console.log("immediate order evaluation failed", order.orderHash, String(error).slice(0, 120));
-            });
-          }
+          // DEX evaluation is deliberately left to the bounded watcher tick.
+          // Quoting every Grid child immediately would bypass grouping and the
+          // per-tick RPC budget. P2P matching remains immediate and off-chain.
+          engine.add(order);
         }
       : undefined,
     chain: {
@@ -122,6 +125,14 @@ async function main(): Promise<void> {
   api.get("/metrics", async () => ({
     ...monitor.metrics.snapshot(),
     fillsPerMinute: monitor.metrics.fillsPerMinute(),
+    rpcBudget: {
+      estimatedSteadyStateDailyAlchemyCu: estimateSteadyStateDailyAlchemyCu(config),
+      watcher: watcher.rpcBudgetSnapshot(),
+      venues: venueQuoter.rpcBudgetSnapshot(),
+      publicQuotes: api.rpcBudgetSnapshot(),
+      indexer: indexer.rpcBudgetSnapshot(),
+      monitor: monitor.rpcBudgetSnapshot(),
+    },
   }));
 
   const shutdown = async (signal: string) => {

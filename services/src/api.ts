@@ -60,7 +60,23 @@ interface StreamClient {
   channels: Set<string>;
 }
 
-type Api = FastifyInstance & { broadcast: (event: StreamEvent) => void };
+interface PublicExecutableQuote {
+  pair: string;
+  price: number;
+  venue: string;
+  venues: { name: string; price: number }[];
+  referenceBaseAmount: string;
+  ts: number;
+}
+
+type Api = FastifyInstance & {
+  broadcast: (event: StreamEvent) => void;
+  rpcBudgetSnapshot: () => {
+    publicQuoteCacheHits: number;
+    publicQuoteCacheMisses: number;
+    publicQuoteRequestsCoalesced: number;
+  };
+};
 
 export function buildApi(deps: ApiDeps): Api {
   const { config, store, onNewOrder, chain, quoter } = deps;
@@ -70,6 +86,13 @@ export function buildApi(deps: ApiDeps): Api {
   const blockTimestamps = new Map<number, number>();
   const rateBuckets = new Map<string, { minute: number; count: number }>();
   const configuredPairs = publicPairs(config);
+  const publicQuoteCache = new Map<string, { expiresAt: number; value: PublicExecutableQuote }>();
+  const publicQuoteInFlight = new Map<string, Promise<PublicExecutableQuote>>();
+  const publicQuoteStats = {
+    publicQuoteCacheHits: 0,
+    publicQuoteCacheMisses: 0,
+    publicQuoteRequestsCoalesced: 0,
+  };
 
   app.addHook("onRequest", async (req, reply) => {
     const origin = req.headers.origin;
@@ -134,6 +157,59 @@ export function buildApi(deps: ApiDeps): Api {
       status: "resting",
     });
     return buildBook(orders, pair);
+  };
+
+  const currentPublicQuote = async (pair: PublicPair): Promise<PublicExecutableQuote> => {
+    if (!quoter) throw new Error("no executable quote available");
+    const now = Date.now();
+    const cached = publicQuoteCache.get(pair.id);
+    if (cached && cached.expiresAt > now) {
+      publicQuoteStats.publicQuoteCacheHits += 1;
+      return cached.value;
+    }
+    const pending = publicQuoteInFlight.get(pair.id);
+    if (pending) {
+      publicQuoteStats.publicQuoteRequestsCoalesced += 1;
+      return pending;
+    }
+    publicQuoteStats.publicQuoteCacheMisses += 1;
+
+    const request = (async () => {
+      const amountIn = parseUnits(pair.referenceBaseAmount, pair.baseDecimals);
+      const referenceBaseAmount = Number(pair.referenceBaseAmount);
+      const quotes = await quoter.quoteAll(pair.baseAsset, pair.quoteAsset, amountIn);
+      const venues = quotes.map((quote) => ({
+        name: quote.venue,
+        price: Number(formatUnits(quote.amountOut, pair.quoteDecimals)) / referenceBaseAmount,
+      }));
+      const best = venues.reduce((current, candidate) =>
+        candidate.price > current.price ? candidate : current,
+      );
+      const timestamp = Math.max(...quotes.map((quote) => quote.quotedAtMs));
+      const value: PublicExecutableQuote = {
+        pair: pair.id,
+        price: best.price,
+        venue: best.name,
+        venues,
+        referenceBaseAmount: pair.referenceBaseAmount,
+        ts: timestamp,
+      };
+      await Promise.all([
+        store.insertQuotePoint(pair.id, timestamp, best.price),
+        store.insertVenueQuotePoints(pair.id, timestamp, venues),
+      ]);
+      publicQuoteCache.set(pair.id, {
+        expiresAt: Date.now() + config.publicQuoteCacheMs,
+        value,
+      });
+      return value;
+    })();
+    publicQuoteInFlight.set(pair.id, request);
+    try {
+      return await request;
+    } finally {
+      publicQuoteInFlight.delete(pair.id);
+    }
   };
 
   const pushBook = async (pair: PublicPair) => {
@@ -460,29 +536,7 @@ export function buildApi(deps: ApiDeps): Api {
     if (!pair) return reply.code(404).send({ error: "pair not supported" });
     if (!quoter) return reply.code(404).send({ error: "no executable quote available" });
     try {
-      const amountIn = parseUnits(pair.referenceBaseAmount, pair.baseDecimals);
-      const referenceBaseAmount = Number(pair.referenceBaseAmount);
-      const quotes = await quoter.quoteAll(pair.baseAsset, pair.quoteAsset, amountIn);
-      const venues = quotes.map((quote) => ({
-        name: quote.venue,
-        price: Number(formatUnits(quote.amountOut, pair.quoteDecimals)) / referenceBaseAmount,
-      }));
-      const best = venues.reduce((current, candidate) =>
-        candidate.price > current.price ? candidate : current,
-      );
-      const timestamp = Math.max(...quotes.map((quote) => quote.quotedAtMs));
-      await Promise.all([
-        store.insertQuotePoint(pair.id, timestamp, best.price),
-        store.insertVenueQuotePoints(pair.id, timestamp, venues),
-      ]);
-      return {
-        pair: pair.id,
-        price: best.price,
-        venue: best.name,
-        venues,
-        referenceBaseAmount: pair.referenceBaseAmount,
-        ts: timestamp,
-      };
+      return await currentPublicQuote(pair);
     } catch {
       return reply.code(404).send({ error: "no executable quote available" });
     }
@@ -531,7 +585,10 @@ export function buildApi(deps: ApiDeps): Api {
 
   app.get("/health", async () => ({ ok: true, chainId: config.chainId }));
 
-  return Object.assign(app, { broadcast });
+  return Object.assign(app, {
+    broadcast,
+    rpcBudgetSnapshot: () => ({ ...publicQuoteStats }),
+  });
 }
 
 export function softCancelMessage(chainId: number, orderHash: string): string {

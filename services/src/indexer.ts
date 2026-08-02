@@ -1,11 +1,10 @@
-import { Contract, type EventLog, type Log, type Provider } from "ethers";
+import { Contract, type Provider } from "ethers";
 
 import { PERMIT2_ABI, SETTLEMENT_ABI } from "./abi.js";
 import type { SeltraConfig } from "./config.js";
 import type { Store } from "./store.js";
 import { nonceToInvalidation } from "./permit2.js";
-
-type IndexedEvent = { kind: "dex" | "p2p" | "epoch" | "invalidation" | "pause" | "unpause"; event: EventLog | Log };
+import { queryParsedContractLogs } from "./logs.js";
 
 /**
  * Durable finalized-block reconciler. Each completed range advances a
@@ -18,6 +17,9 @@ export class Indexer {
   private lastBlock = 0;
   private timer?: NodeJS.Timeout;
   private readonly checkpointKey: string;
+  private logRequests = 0;
+  private running = false;
+  private overlappingTicksSkipped = 0;
 
   constructor(
     private readonly config: SeltraConfig,
@@ -46,7 +48,7 @@ export class Indexer {
     }
     await this.tick();
     this.timer = setInterval(
-      () => void this.tick().catch((error) => console.error("indexer tick failed", error)),
+      () => void this.runTick(),
       this.config.pollIntervalMs,
     );
   }
@@ -66,28 +68,38 @@ export class Indexer {
     }
   }
 
+  private async runTick(): Promise<void> {
+    if (this.running) {
+      this.overlappingTicksSkipped += 1;
+      return;
+    }
+    this.running = true;
+    try {
+      await this.tick();
+    } catch (error) {
+      console.error("indexer tick failed", error);
+    } finally {
+      this.running = false;
+    }
+  }
+
   private async processRange(from: number, to: number): Promise<void> {
-    const [dexFills, p2pFills, epochs, invalidations, pauses, unpauses] = await Promise.all([
-      this.settlement.queryFilter(this.settlement.filters.OrderFilledDEX(), from, to),
-      this.settlement.queryFilter(this.settlement.filters.OrderFilledP2P(), from, to),
-      this.settlement.queryFilter(this.settlement.filters.EpochIncremented(), from, to),
-      this.permit2.queryFilter(this.permit2.filters.UnorderedNonceInvalidation(), from, to),
-      this.settlement.queryFilter(this.settlement.filters.FillsPaused(), from, to),
-      this.settlement.queryFilter(this.settlement.filters.FillsUnpaused(), from, to),
-    ]);
+    this.logRequests += 1;
+    const events = await queryParsedContractLogs(this.provider, [
+      {
+        address: this.config.settlement,
+        interface: this.settlement.interface,
+        events: ["OrderFilledDEX", "OrderFilledP2P", "EpochIncremented", "FillsPaused", "FillsUnpaused"],
+      },
+      {
+        address: this.config.permit2,
+        interface: this.permit2.interface,
+        events: ["UnorderedNonceInvalidation"],
+      },
+    ], from, to);
 
-    const events: IndexedEvent[] = [
-      ...dexFills.map((event) => ({ kind: "dex" as const, event })),
-      ...p2pFills.map((event) => ({ kind: "p2p" as const, event })),
-      ...epochs.map((event) => ({ kind: "epoch" as const, event })),
-      ...invalidations.map((event) => ({ kind: "invalidation" as const, event })),
-      ...pauses.map((event) => ({ kind: "pause" as const, event })),
-      ...unpauses.map((event) => ({ kind: "unpause" as const, event })),
-    ].sort((a, b) => a.event.blockNumber - b.event.blockNumber || a.event.index - b.event.index);
-
-    for (const item of events) {
-      const ev = item.event as EventLog;
-      if (item.kind === "dex") {
+    for (const ev of events) {
+      if (ev.name === "OrderFilledDEX") {
         const [orderHash, , keeper, adapterId, , amountOut, makerImprovement, keeperReward] = ev.args;
         await this.store.setStatus(orderHash, "filled");
         const inserted = await this.store.insertFill({
@@ -102,7 +114,7 @@ export class Indexer {
           blockNumber: ev.blockNumber,
         });
         if (inserted) this.hooks.onFill?.(orderHash, "dex");
-      } else if (item.kind === "p2p") {
+      } else if (ev.name === "OrderFilledP2P") {
         const [hashA, hashB, surplus, shareA, shareB, keeperReward] = ev.args;
         for (const [orderHash, improvement] of [[hashA, shareA], [hashB, shareB]] as const) {
           await this.store.setStatus(orderHash, "filled");
@@ -118,7 +130,7 @@ export class Indexer {
           });
           if (inserted) this.hooks.onFill?.(orderHash, "p2p");
         }
-      } else if (item.kind === "epoch") {
+      } else if (ev.name === "EpochIncremented") {
         const [maker, newEpoch] = ev.args;
         await this.store.setEpoch(maker, newEpoch);
         const orders = await this.store.listOrders({ maker, status: "resting" });
@@ -128,7 +140,7 @@ export class Indexer {
             this.hooks.onCancel?.(order.orderHash);
           }
         }
-      } else if (item.kind === "invalidation") {
+      } else if (ev.name === "UnorderedNonceInvalidation") {
         const [owner, word, mask] = ev.args;
         const orders = await this.store.listOrders({ maker: owner, status: "resting" });
         for (const order of orders) {
@@ -138,9 +150,16 @@ export class Indexer {
             this.hooks.onCancel?.(order.orderHash);
           }
         }
-      } else {
-        this.hooks.onPause?.(item.kind === "pause");
+      } else if (ev.name === "FillsPaused" || ev.name === "FillsUnpaused") {
+        this.hooks.onPause?.(ev.name === "FillsPaused");
       }
     }
+  }
+
+  rpcBudgetSnapshot(): { combinedLogRequests: number; overlappingTicksSkipped: number } {
+    return {
+      combinedLogRequests: this.logRequests,
+      overlappingTicksSkipped: this.overlappingTicksSkipped,
+    };
   }
 }

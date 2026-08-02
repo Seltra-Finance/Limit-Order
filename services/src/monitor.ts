@@ -2,6 +2,7 @@ import { Contract, type Provider } from "ethers";
 
 import { SETTLEMENT_ABI } from "./abi.js";
 import type { SeltraConfig } from "./config.js";
+import { queryParsedContractLogs } from "./logs.js";
 
 /**
  * Monitoring and alerting (revised spec 2.3 / 3.5). Two layers:
@@ -222,6 +223,9 @@ export class SeltraMonitor {
   private settlement: Contract;
   private lastBlock = 0;
   private timer?: NodeJS.Timeout;
+  private logRequests = 0;
+  private running = false;
+  private overlappingTicksSkipped = 0;
 
   constructor(
     private readonly config: SeltraConfig,
@@ -235,7 +239,7 @@ export class SeltraMonitor {
 
   async start(): Promise<void> {
     this.lastBlock = await this.provider.getBlockNumber();
-    this.timer = setInterval(() => void this.tick().catch(() => {}), this.config.pollIntervalMs);
+    this.timer = setInterval(() => void this.runTick(), this.config.pollIntervalMs);
   }
 
   stop(): void {
@@ -246,51 +250,76 @@ export class SeltraMonitor {
     const head = await this.provider.getBlockNumber();
     if (head <= this.lastBlock) return;
     const from = this.lastBlock + 1;
-    this.lastBlock = head;
     const now = Date.now();
 
-    const [dex, p2p, paused, unpaused] = await Promise.all([
-      this.settlement.queryFilter(this.settlement.filters.OrderFilledDEX(), from, head),
-      this.settlement.queryFilter(this.settlement.filters.OrderFilledP2P(), from, head),
-      this.settlement.queryFilter(this.settlement.filters.FillsPaused(), from, head),
-      this.settlement.queryFilter(this.settlement.filters.FillsUnpaused(), from, head),
-    ]);
+    this.logRequests += 1;
+    const events = await queryParsedContractLogs(this.provider, [{
+      address: this.config.settlement,
+      interface: this.settlement.interface,
+      events: ["OrderFilledDEX", "OrderFilledP2P", "FillsPaused", "FillsUnpaused"],
+    }], from, head);
 
     const alerts: MonitorAlert[] = [];
-    for (const ev of dex) {
-      const [orderHash, maker, keeper, adapterId, makingAmount, amountOut, makerImprovement, keeperReward] =
-        (ev as any).args;
-      alerts.push(
-        ...this.metrics.ingestDexFill({
-          orderHash,
-          maker,
-          keeper,
-          adapterId: Number(adapterId),
-          makingAmount,
-          amountOut,
-          makerImprovement,
-          keeperReward,
-          blockNumber: ev.blockNumber,
-          timestampMs: now,
-        }),
-      );
+    for (const ev of events) {
+      if (ev.name === "OrderFilledDEX") {
+        const [orderHash, maker, keeper, adapterId, makingAmount, amountOut, makerImprovement, keeperReward] =
+          ev.args;
+        alerts.push(
+          ...this.metrics.ingestDexFill({
+            orderHash,
+            maker,
+            keeper,
+            adapterId: Number(adapterId),
+            makingAmount,
+            amountOut,
+            makerImprovement,
+            keeperReward,
+            blockNumber: ev.blockNumber,
+            timestampMs: now,
+          }),
+        );
+      } else if (ev.name === "OrderFilledP2P") {
+        const [hashA, hashB, surplus, , , keeperReward] = ev.args;
+        alerts.push(
+          ...this.metrics.ingestP2PFill({
+            hashA,
+            hashB,
+            surplus,
+            keeperReward,
+            blockNumber: ev.blockNumber,
+            timestampMs: now,
+          }),
+        );
+      } else if (ev.name === "FillsPaused") {
+        alerts.push(...this.metrics.ingestPause(true, ev.args[0]));
+      } else if (ev.name === "FillsUnpaused") {
+        alerts.push(...this.metrics.ingestPause(false));
+      }
     }
-    for (const ev of p2p) {
-      const [hashA, hashB, surplus, , , keeperReward] = (ev as any).args;
-      alerts.push(
-        ...this.metrics.ingestP2PFill({
-          hashA,
-          hashB,
-          surplus,
-          keeperReward,
-          blockNumber: ev.blockNumber,
-          timestampMs: now,
-        }),
-      );
-    }
-    for (const ev of paused) alerts.push(...this.metrics.ingestPause(true, (ev as any).args?.[0]));
-    for (const _ of unpaused) alerts.push(...this.metrics.ingestPause(false));
 
     for (const alert of alerts) await emitAlert(alert, this.webhookUrl);
+    this.lastBlock = head;
+  }
+
+  private async runTick(): Promise<void> {
+    if (this.running) {
+      this.overlappingTicksSkipped += 1;
+      return;
+    }
+    this.running = true;
+    try {
+      await this.tick();
+    } catch {
+      // Retry the same range on the next non-overlapping tick.
+    } finally {
+      this.running = false;
+    }
+  }
+
+  rpcBudgetSnapshot(): { combinedLogRequests: number; overlappingTicksSkipped: number } {
+    return {
+      combinedLogRequests: this.logRequests,
+      overlappingTicksSkipped: this.overlappingTicksSkipped,
+    };
   }
 }

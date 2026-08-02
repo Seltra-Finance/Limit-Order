@@ -1,13 +1,15 @@
-import type { Provider } from "ethers";
+import { Interface, type Provider } from "ethers";
 import { describe, expect, it, vi } from "vitest";
 
 import type { SeltraConfig } from "../src/config.js";
+import { SETTLEMENT_ABI } from "../src/abi.js";
 import { Indexer } from "../src/indexer.js";
 import { MemoryStore } from "../src/store.js";
 
 const SETTLEMENT = "0x0000000000000000000000000000000000000011";
 const config: SeltraConfig = {
   rpcUrl: "http://localhost:8545/",
+  quoteRpcUrl: "http://localhost:8545/",
   chainId: 43113,
   permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
   settlement: SETTLEMENT,
@@ -25,52 +27,47 @@ const config: SeltraConfig = {
   gasCostBufferBps: 2000,
   quoteDeadlineSeconds: 30,
   maxQuoteAgeMs: 5000,
+  watcherPollIntervalMs: 60_000,
   pollIntervalMs: 60_000,
+  watcherMaxQuoteGroupsPerTick: 32,
+  publicQuoteCacheMs: 5_000,
   indexerStartBlock: 100,
   indexerConfirmations: 2,
   indexerBatchSize: 3,
 };
 
-function emptyContract() {
-  return {
-    filters: {
-      OrderFilledDEX: vi.fn(),
-      OrderFilledP2P: vi.fn(),
-      EpochIncremented: vi.fn(),
-      UnorderedNonceInvalidation: vi.fn(),
-      FillsPaused: vi.fn(),
-      FillsUnpaused: vi.fn(),
-    },
-    queryFilter: vi.fn().mockResolvedValue([]),
-  };
-}
-
 describe("Indexer checkpoints", () => {
   it("scans finalized history in bounded ranges and persists progress", async () => {
-    const provider = { getBlockNumber: vi.fn().mockResolvedValue(108) } as unknown as Provider;
+    const getLogs = vi.fn().mockResolvedValue([]);
+    const provider = {
+      getBlockNumber: vi.fn().mockResolvedValue(108),
+      getLogs,
+    } as unknown as Provider;
     const store = new MemoryStore();
     const indexer = new Indexer(config, provider, store);
-    const settlement = emptyContract();
-    const permit2 = emptyContract();
-    (indexer as unknown as { settlement: typeof settlement }).settlement = settlement;
-    (indexer as unknown as { permit2: typeof permit2 }).permit2 = permit2;
 
     await indexer.start();
     indexer.stop();
 
     expect(await store.getIndexerCheckpoint(`settlement:43113:${SETTLEMENT.toLowerCase()}`)).toBe(106);
-    expect(settlement.queryFilter.mock.calls.map((call) => call.slice(1))).toContainEqual([100, 102]);
-    expect(settlement.queryFilter.mock.calls.map((call) => call.slice(1))).toContainEqual([103, 105]);
-    expect(settlement.queryFilter.mock.calls.map((call) => call.slice(1))).toContainEqual([106, 106]);
+    expect(getLogs.mock.calls.map(([filter]) => [filter.fromBlock, filter.toBlock])).toEqual([
+      [100, 102],
+      [103, 105],
+      [106, 106],
+    ]);
+    expect(getLogs).toHaveBeenCalledTimes(3);
+    expect(indexer.rpcBudgetSnapshot()).toEqual({
+      combinedLogRequests: 3,
+      overlappingTicksSkipped: 0,
+    });
+    expect(getLogs.mock.calls[0]![0].address).toEqual([config.settlement, config.permit2]);
+    expect(getLogs.mock.calls[0]![0].topics[0]).toHaveLength(6);
 
     const resumed = new Indexer(config, provider, store);
-    const resumedSettlement = emptyContract();
-    const resumedPermit2 = emptyContract();
-    (resumed as unknown as { settlement: typeof resumedSettlement }).settlement = resumedSettlement;
-    (resumed as unknown as { permit2: typeof resumedPermit2 }).permit2 = resumedPermit2;
+    getLogs.mockClear();
     await resumed.start();
     resumed.stop();
-    expect(resumedSettlement.queryFilter).not.toHaveBeenCalled();
+    expect(getLogs).not.toHaveBeenCalled();
   });
 
   it("deduplicates replayed fill identities in the store", async () => {
@@ -89,5 +86,47 @@ describe("Indexer checkpoints", () => {
     expect(await store.insertFill(fill)).toBe(true);
     expect(await store.insertFill(fill)).toBe(false);
     expect(await store.listFills()).toHaveLength(1);
+  });
+
+  it("decodes a DEX fill from the combined eth_getLogs response", async () => {
+    const settlementInterface = new Interface(SETTLEMENT_ABI);
+    const fragment = settlementInterface.getEvent("OrderFilledDEX")!;
+    const orderHash = `0x${"11".repeat(32)}`;
+    const encoded = settlementInterface.encodeEventLog(fragment, [
+      orderHash,
+      "0x00000000000000000000000000000000000000A1",
+      "0x00000000000000000000000000000000000000B2",
+      2,
+      10n,
+      20n,
+      2n,
+      1n,
+    ]);
+    const provider = {
+      getBlockNumber: vi.fn().mockResolvedValue(102),
+      getLogs: vi.fn().mockResolvedValue([{
+        address: SETTLEMENT,
+        data: encoded.data,
+        topics: encoded.topics,
+        blockNumber: 100,
+        index: 0,
+        transactionHash: `0x${"22".repeat(32)}`,
+      }]),
+    } as unknown as Provider;
+    const store = new MemoryStore();
+    const indexer = new Indexer(config, provider, store);
+
+    await indexer.start();
+    indexer.stop();
+
+    expect(await store.listFills(orderHash)).toMatchObject([{
+      orderHash,
+      path: "dex",
+      adapterId: 2,
+      amountOut: 20n,
+      makerImprovement: 2n,
+      keeperReward: 1n,
+      blockNumber: 100,
+    }]);
   });
 });

@@ -7,6 +7,7 @@ const LFJ_QUOTER_ABI = [
   "function findBestPathFromAmountIn(address[] route,uint128 amountIn) view returns ((address[] route,address[] pairs,uint256[] binSteps,uint8[] versions,uint128[] amounts,uint128[] virtualAmountsWithoutSlippage,uint128[] fees) quote)",
 ];
 const UINT128_MAX = (1n << 128n) - 1n;
+const REGISTRATION_CACHE_MS = 60_000;
 
 export interface DexQuote {
   adapterId: number;
@@ -33,6 +34,15 @@ export interface VenueQuoter extends BestVenueQuoter {
 export class VenueQuoteCoordinator implements BestVenueQuoter {
   private readonly router: Contract;
   private readonly lfjQuoters = new Map<string, Contract>();
+  private readonly registrationCache = new Map<number, { value: boolean; expiresAt: number }>();
+  private readonly registrationInFlight = new Map<number, Promise<boolean>>();
+  private readonly quoteInFlight = new Map<string, Promise<DexQuote[]>>();
+  private readonly rpcStats = {
+    routerQuoteCalls: 0,
+    lfjQuoteCalls: 0,
+    registrationReads: 0,
+    coalescedQuoteRequests: 0,
+  };
 
   constructor(
     private readonly config: SeltraConfig,
@@ -48,6 +58,22 @@ export class VenueQuoteCoordinator implements BestVenueQuoter {
   }
 
   async quoteAll(tokenIn: string, tokenOut: string, amountIn: bigint): Promise<DexQuote[]> {
+    const key = `${tokenIn.toLowerCase()}:${tokenOut.toLowerCase()}:${amountIn}`;
+    const pending = this.quoteInFlight.get(key);
+    if (pending) {
+      this.rpcStats.coalescedQuoteRequests += 1;
+      return pending;
+    }
+    const request = this.quoteAllUncached(tokenIn, tokenOut, amountIn);
+    this.quoteInFlight.set(key, request);
+    try {
+      return await request;
+    } finally {
+      this.quoteInFlight.delete(key);
+    }
+  }
+
+  private async quoteAllUncached(tokenIn: string, tokenOut: string, amountIn: bigint): Promise<DexQuote[]> {
     if (amountIn <= 0n) throw new Error("quote amount must be positive");
     const pairName = findPairName(this.config.pairs, tokenIn, tokenOut);
     if (!pairName) throw new Error("pair is not in the configured registry");
@@ -74,15 +100,34 @@ export class VenueQuoteCoordinator implements BestVenueQuoter {
     tokenOut: string,
     amountIn: bigint,
   ): Promise<DexQuote> {
-    if (!(await this.router.isRegistered(venue.adapterId))) throw new Error(`${venue.name} is unavailable`);
+    if (!(await this.isRegistered(venue.adapterId))) throw new Error(`${venue.name} is unavailable`);
     const now = this.nowMs();
     const deadline = BigInt(Math.floor(now / 1000) + this.config.quoteDeadlineSeconds);
     const extra = await this.buildExtra(venue, pairName, tokenIn, tokenOut, amountIn, deadline);
+    this.rpcStats.routerQuoteCalls += 1;
     const amountOut = BigInt(
       await this.router.quote.staticCall(venue.adapterId, tokenIn, tokenOut, amountIn, extra),
     );
     if (amountOut <= 0n) throw new Error(`${venue.name} returned zero output`);
     return { adapterId: venue.adapterId, venue: venue.name, amountOut, extra, quotedAtMs: now };
+  }
+
+  private async isRegistered(adapterId: number): Promise<boolean> {
+    const now = this.nowMs();
+    const cached = this.registrationCache.get(adapterId);
+    if (cached && cached.expiresAt > now) return cached.value;
+    const pending = this.registrationInFlight.get(adapterId);
+    if (pending) return pending;
+    this.rpcStats.registrationReads += 1;
+    const request = Promise.resolve(this.router.isRegistered(adapterId)).then(Boolean);
+    this.registrationInFlight.set(adapterId, request);
+    try {
+      const value = await request;
+      this.registrationCache.set(adapterId, { value, expiresAt: now + REGISTRATION_CACHE_MS });
+      return value;
+    } finally {
+      this.registrationInFlight.delete(adapterId);
+    }
   }
 
   private async buildExtra(
@@ -101,6 +146,7 @@ export class VenueQuoteCoordinator implements BestVenueQuoter {
         quoter = new Contract(venue.quoter, LFJ_QUOTER_ABI, this.provider);
         this.lfjQuoters.set(venue.quoter.toLowerCase(), quoter);
       }
+      this.rpcStats.lfjQuoteCalls += 1;
       const quote = await quoter.findBestPathFromAmountIn([tokenIn, tokenOut], amountIn);
       const route = [...quote.route].map(String);
       const binSteps = [...quote.binSteps].map(BigInt);
@@ -138,6 +184,21 @@ export class VenueQuoteCoordinator implements BestVenueQuoter {
         }],
       ],
     );
+  }
+
+  rpcBudgetSnapshot(): {
+    routerQuoteCalls: number;
+    lfjQuoteCalls: number;
+    registrationReads: number;
+    coalescedQuoteRequests: number;
+    estimatedQuoteRpcCu: number;
+  } {
+    const estimatedQuoteRpcCu = 26 * (
+      this.rpcStats.routerQuoteCalls
+      + this.rpcStats.lfjQuoteCalls
+      + this.rpcStats.registrationReads
+    );
+    return { ...this.rpcStats, estimatedQuoteRpcCu };
   }
 }
 

@@ -12,6 +12,7 @@ const POOL = "0x00000000000000000000000000000000000000D4";
 function config(): SeltraConfig {
   return {
     rpcUrl: "http://localhost:8545/",
+    quoteRpcUrl: "http://localhost:8545/",
     chainId: 43114,
     permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
     settlement: "0x0000000000000000000000000000000000000011",
@@ -37,7 +38,10 @@ function config(): SeltraConfig {
     gasCostBufferBps: 2000,
     quoteDeadlineSeconds: 30,
     maxQuoteAgeMs: 5000,
+    watcherPollIntervalMs: 2000,
     pollIntervalMs: 2000,
+    watcherMaxQuoteGroupsPerTick: 32,
+    publicQuoteCacheMs: 5_000,
     indexerStartBlock: 1,
     indexerConfirmations: 2,
     indexerBatchSize: 2000,
@@ -68,6 +72,16 @@ describe("VenueQuoteCoordinator", () => {
     expect(routes[0].pair.toLowerCase()).toBe(POOL.toLowerCase());
     expect(routes[0].receiver.toLowerCase()).toBe(ROUTER.toLowerCase());
     expect(routes[0].concentrated).toBe(true);
+
+    await coordinator.quoteBest(TOKEN_A, TOKEN_B, 101n);
+    expect(router.isRegistered).toHaveBeenCalledTimes(2);
+    expect(coordinator.rpcBudgetSnapshot()).toEqual({
+      routerQuoteCalls: 4,
+      lfjQuoteCalls: 0,
+      registrationReads: 2,
+      coalescedQuoteRequests: 0,
+      estimatedQuoteRpcCu: 156,
+    });
   });
 
   it("skips a paused venue instead of returning its price", async () => {
